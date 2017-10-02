@@ -78,45 +78,6 @@ typedef void (*bearer_rx_cb_t)(packet_t* p_packet, bearer_t bearer, const packet
  */
 uint32_t bearer_init(const nrf_mesh_init_params_t * p_init_params);
 
-
-/**
- * Enable or disable AD type filtering. If enabled, only the
- * packets with the AD types added via @ref bearer_adtype_add()
- * will be kept and processed by the bearer.
- *
- * @param[in] filter AD type filtering state; set to true to enable
- *            AD Type filter, and false to disable
- *
- * @note If no AD type is added via @ref bearer_adtype_add()
- * then all advertisement packets received will be dropped.
- */
-void bearer_adtype_filtering_set(bool filter);
-
-/**
- * Remove the AD type from the list of accepted AD types.
- *
- * @param[in] type The AD type that will be removed from the filter.
- *            Data from packets with this AD type will be dropped if
- *            AD type filtering is enabled via @ref bearer_adtype_filtering_set
- *
- * @note This function has no effect if the AD type has not
- * been added.
- */
-void bearer_adtype_remove(uint8_t type);
-
-/**
- * Add the AD type to the list of accepted AD types.
- *
- * @param[in] type The AD type that will be added to the filter.
- *            Data from packets with this AD type will always
- *            be passed on to the upper layers.
- *
- * @note Ad type filtering must be enabled (via a call to
- * @ref bearer_adtype_filtering_set) for the added AD types to
- * have any effect.
- */
-void bearer_adtype_add(uint8_t type);
-
 /**
  * Set a whitelist for GAP addresses. Only packets with a GAP address entry in
  * the whitelist will be passed from the radio to the stack for processing.

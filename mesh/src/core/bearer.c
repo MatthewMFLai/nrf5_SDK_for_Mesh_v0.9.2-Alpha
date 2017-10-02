@@ -39,6 +39,7 @@
 #include <stddef.h>
 
 #include "bearer.h"
+#include "bearer_refactored.h"
 #include "bearer_adv.h"
 #include "internal_event.h"
 #include "bearer_event.h"
@@ -104,33 +105,10 @@ static uint32_t packets_accepted = 0;
 /** Filter for GAP addresses */
 static gap_addr_filter_t m_addr_filter;
 
-static uint32_t m_adtype_filter[FILTER_SIZE] = {0};
-static bool m_adtype_filtering = false;
-
 #ifdef NRF_MESH_TEST_BUILD
 static uint32_t packets_dropped_invalid_rssi = 0;
 static uint8_t m_rssi_filter_val = 0;
 #endif
-
-static inline bool m_adtype_valid(uint8_t type)
-{
-    bool adtype_valid = false;
-    if (m_adtype_filtering)
-    {
-        uint8_t filter_index = ADTYPE_FILTER_INDEX(type);
-        uint32_t filter_value = ADTYPE_FILTER_VALUE(type);
-
-        if ( filter_value & m_adtype_filter[filter_index] )
-        {
-            adtype_valid = true;
-        }
-    }
-    else
-    {
-        adtype_valid = true;
-    }
-    return adtype_valid;
-}
 
 /**
  * Check whether the given address filter will accept the given packet.
@@ -334,25 +312,6 @@ uint32_t bearer_init(const nrf_mesh_init_params_t * p_init_params)
 #endif
 
     return NRF_SUCCESS;
-}
-
-void bearer_adtype_filtering_set(bool filter)
-{
-    m_adtype_filtering = filter;
-}
-
-void bearer_adtype_add(uint8_t type)
-{
-    uint8_t filter_index = ADTYPE_FILTER_INDEX(type);
-    uint32_t filter_value = ADTYPE_FILTER_VALUE(type);
-    m_adtype_filter[filter_index] |= filter_value;
-}
-
-void bearer_adtype_remove(uint8_t type)
-{
-    uint8_t filter_index = ADTYPE_FILTER_INDEX(type);
-    uint32_t filter_value = ADTYPE_FILTER_VALUE(type);
-    m_adtype_filter[filter_index] &= ~filter_value;
 }
 
 uint32_t bearer_filter_gap_addr_whitelist_set(const ble_gap_addr_t* const p_addrs, uint16_t addr_count)

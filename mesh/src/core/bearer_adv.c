@@ -42,6 +42,7 @@
 
 #include "nrf_mesh_config_core.h"
 #include "bearer.h"
+#include "bearer_refactored.h"
 #include "bearer_event.h"
 #include "radio.h"
 #include "timer_scheduler.h"

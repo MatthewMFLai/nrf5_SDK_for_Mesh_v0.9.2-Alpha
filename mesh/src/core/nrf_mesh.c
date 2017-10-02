@@ -75,7 +75,8 @@
 #include "prov_bearer_adv.h"
 
 /** Function pointer to mesh assertion handler. */
-nrf_mesh_assertion_handler_t m_assertion_handler;
+// Moved to nrf_mesh_refactored.c
+//nrf_mesh_assertion_handler_t m_assertion_handler;
 
 static bool m_is_enabled     = false;
 static bool m_is_initialized = false;
