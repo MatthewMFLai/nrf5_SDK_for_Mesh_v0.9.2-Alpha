@@ -44,6 +44,7 @@
 #include "nrf_mesh_assert.h"
 #include "event.h"
 #include "beacon.h"
+#include "beacon_refactored.h"
 #include "utils.h"
 #include "uri.h"
 

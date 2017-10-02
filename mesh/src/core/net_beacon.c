@@ -37,6 +37,7 @@
 
 #include "net_beacon.h"
 #include "beacon.h"
+#include "beacon_refactored.h"
 #include "enc.h"
 #include "timer_scheduler.h"
 #include "timer.h"

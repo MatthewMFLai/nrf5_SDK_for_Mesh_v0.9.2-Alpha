@@ -65,52 +65,64 @@ typedef struct
 /********************/
 /* Static variables */
 /********************/
-
+static advertiser_t m_advertiser; /**< Advertiser instance used to transmit beacon packets. */
 /**************/
 /* Public API */
 /**************/
-void beacon_init(uint32_t interval_ms)
+advertiser_t *beacon_get_advertiser(void)
 {
-    NRF_MESH_ASSERT(interval_ms >= BEACON_INTERVAL_MS_MIN && interval_ms <= BEACON_INTERVAL_MS_MAX);
-	advertiser_t *p_advertiser = beacon_get_advertiser();
-    p_advertiser->adv_channel_map = 0x07;
-    p_advertiser->adv_int_min_ms = interval_ms;
-    p_advertiser->adv_int_max_ms = interval_ms + 10;
-    p_advertiser->adv_packet_type = BLE_PACKET_TYPE_ADV_NONCONN_IND;
-    p_advertiser->queue_empty_cb = NULL;
-    bearer_adv_advertiser_init(p_advertiser);
+	return (&m_advertiser);
 }
 
-uint32_t beacon_pkt_in(const ble_ad_data_t* p_ad_data, const packet_meta_t * p_packet_meta)
+uint32_t beacon_tx(uint8_t beacon_type, const void* p_payload, uint8_t payload_len, uint8_t count)
 {
-    NRF_MESH_ASSERT(p_ad_data != NULL);
-    if (p_ad_data->type != AD_TYPE_BEACON)
+    if (p_payload == NULL ||
+            payload_len == 0 ||
+            beacon_type == BEACON_TYPE_INVALID ||
+            payload_len > BEACON_DATA_MAXLEN ||
+            count == 0)
     {
-        return NRF_ERROR_INVALID_DATA;
+        return NRF_ERROR_INVALID_PARAM;
     }
-    if (p_ad_data->length < BEACON_PACKET_AD_LEN_OVERHEAD)
+    uint32_t status;
+    packet_t * p_packet = beacon_create(beacon_type, p_payload, payload_len);
+    if (p_packet == NULL)
     {
-        return NRF_ERROR_INVALID_LENGTH;
+        status = NRF_ERROR_NO_MEM;
     }
-    beacon_packet_t * p_beacon = (beacon_packet_t*) p_ad_data->data;
-
-    const uint8_t beacon_data_len = p_ad_data->length - BEACON_PACKET_AD_LEN_OVERHEAD;
-    uint32_t status = NRF_SUCCESS;
-    switch (p_beacon->beacon_type)
+    else
     {
-        case BEACON_TYPE_UNPROV:
-            prov_beacon_unprov_pkt_in(p_beacon->payload, beacon_data_len, p_packet_meta);
-            break;
-        case BEACON_TYPE_SEC_NET_BCAST:
-            net_beacon_pkt_in(p_beacon->payload, beacon_data_len, p_packet_meta);
-            break;
-
-        default:
-            __LOG(LOG_SRC_BEACON, LOG_LEVEL_WARN, "Got unrecognised beacon ID: 0x%.02x.\n", p_beacon->beacon_type);
-            __LOG_XB(LOG_SRC_BEACON, LOG_LEVEL_INFO, "Beacon raw data:", &p_beacon->payload[0], p_ad_data->length - BEACON_PACKET_AD_LEN_OVERHEAD);
-            status = NRF_ERROR_INVALID_DATA;
-            break;
+        status = bearer_adv_tx(&m_advertiser, p_packet, count);
+        if (status != NRF_SUCCESS)
+        {
+            packet_mgr_free(p_packet);
+        }
     }
-
     return status;
+}
+
+packet_t* beacon_create(uint8_t beacon_type, const void* p_payload, uint8_t payload_len)
+{
+    if (p_payload == NULL || payload_len == 0 || beacon_type == BEACON_TYPE_INVALID || payload_len > BEACON_DATA_MAXLEN)
+    {
+        return NULL;
+    }
+    packet_t* p_packet = NULL;
+    uint8_t beacon_len = BEACON_PACKET_AD_LEN_OVERHEAD + payload_len;
+    uint32_t status = packet_mgr_alloc((packet_generic_t **) &p_packet,
+            BLE_ADV_PACKET_HEADER_LENGTH + BLE_ADV_PACKET_OVERHEAD + BLE_AD_DATA_OVERHEAD + beacon_len);
+
+    if (status == NRF_SUCCESS)
+    {
+        packet_payload_size_set(p_packet, BLE_AD_DATA_OVERHEAD + beacon_len);
+
+        ble_ad_data_t* p_ad_data = (ble_ad_data_t*) &p_packet->payload[0];
+        p_ad_data->length = beacon_len;
+        p_ad_data->type = AD_TYPE_BEACON;
+        beacon_packet_t* p_beacon = (beacon_packet_t*) p_ad_data->data;
+        p_beacon->beacon_type = beacon_type;
+        memcpy(&p_beacon->payload[0], p_payload, payload_len);
+    }
+
+    return p_packet;
 }

@@ -239,6 +239,7 @@
       <file file_name="../mesh/src/core/queue.c" />
       <file file_name="../mesh/src/core/nrf_mesh_refactored.c" />
       <file file_name="../mesh/src/core/bearer_refactored.c" />
+      <file file_name="../mesh/src/core/beacon_refactored.c" />
     </folder>
     <folder Name="Mesh DFU">
       <file file_name="../mesh/src/dfu/nrf_mesh_dfu.c" />

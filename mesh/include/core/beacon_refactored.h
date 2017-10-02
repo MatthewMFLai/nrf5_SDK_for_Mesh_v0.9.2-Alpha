@@ -34,8 +34,8 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#ifndef MESH_BEACON_H__
-#define MESH_BEACON_H__
+#ifndef MESH_BEACON_REFACTORED_H__
+#define MESH_BEACON_REFACTORED_H__
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -73,25 +73,40 @@
 #define BEACON_DATA_MAXLEN            (BLE_ADV_PACKET_PAYLOAD_MAX_LENGTH - (sizeof(ble_ad_header_t) + BEACON_PACKET_OVERHEAD)) /**< Maximum length of beacon data. */
 
 /**
- * Initialize the beacon module.
+ * Enable the mesh beacon with the given contents. Will replace any current
+ * beacons.
  *
- * @param[in] interval_ms The beacon advertisement interval in milliseconds.
- * Must be between @ref BEACON_INTERVAL_MS_MIN and @ref BEACON_INTERVAL_MS_MAX.
+ * @param[in] beacon_type The beacon type to run. Must be a value in @ref
+ * BEACON_TYPE, that's not @ref BEACON_TYPE_INVALID.
+ * @param[in] p_payload Pointer to payload data that will be copied into the
+ * beacon packet. Cannot be NULL.
+ * @param[in] payload_len Length of the payload given in the p_payload
+ * parameter. Must be between 1 and @ref BEACON_DATA_MAXLEN, inclusive.
+ * @param[in] count Number of transmissions, or  @ref BEARER_ADV_REPEAT_INFINITE.
+ *
+ * @retval NRF_SUCCESS Successfully enabled beacon with the given parameters.
+ * @retval NRF_ERROR_INVALID_PARAM One or more of the parameter conditions have
+ * been broken.
+ * @retval NRF_ERROR_INVALID_LENGTH The given payload length is too long to fit
+ * into a single advertisement packet, or is 0.
+ * @retval NRF_ERROR_NO_MEM Not enough memory for beacon to be scheduled.
  */
-void beacon_init(uint32_t interval_ms);
+uint32_t beacon_tx(uint8_t beacon_type, const void* p_payload, uint8_t payload_len, uint8_t count);
 
 /**
- * Function for passing beacon packets to the beacon module.
+ * Create a mesh beacon with the given contents.
  *
- * @param[in] p_ad_data     BLE AD data packet of beacon type.
- * @param[in] p_packet_meta Packet metadata.
+ * @param[in] beacon_type The beacon type to run. Must be a value in @ref
+ * BEACON_TYPE, that's not @ref BEACON_TYPE_INVALID.
+ * @param[in] p_payload Pointer to payload data that will be copied into the
+ * beacon packet. Cannot be NULL.
+ * @param[in] payload_len Length of the payload given in the p_payload
+ * parameter. Must be between 1 and @ref BEACON_DATA_MAXLEN, inclusive.
  *
- * @retval NRF_SUCCESS Packet successfully processed.
- * @retval NRF_ERROR_INVALID_DATA Beacon type not recognized.
+ * @return Packet pointer with a single reference, or NULL if creation failed.
  */
-uint32_t beacon_pkt_in(const ble_ad_data_t* p_ad_data, const packet_meta_t * p_packet_meta);
+packet_t* beacon_create(uint8_t beacon_type, const void* p_payload, uint8_t payload_len);
 
-/**
- * @}
- */
+advertiser_t *beacon_get_advertiser(void);
+
 #endif
