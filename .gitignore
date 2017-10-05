@@ -224,3 +224,5 @@ pip-log.txt
 *.png
 *.map
 *.a
+examples/examples.emSession
+examples/examples.emSession

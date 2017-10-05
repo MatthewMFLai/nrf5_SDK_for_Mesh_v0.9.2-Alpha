@@ -205,7 +205,6 @@
       <file file_name="../mesh/src/core/event.c" />
       <file file_name="../mesh/src/core/fifo.c" />
       <file file_name="../mesh/src/core/flash_manager.c" />
-      <file file_name="../mesh/src/core/flash_manager_defrag.c" />
       <file file_name="../mesh/src/core/flash_manager_internal.c" />
       <file file_name="../mesh/src/core/hal.c" />
       <file file_name="../mesh/src/core/internal_event.c" />
