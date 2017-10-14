@@ -38,7 +38,7 @@
 #ifndef NRF_H
 #define NRF_H
 
-#if !HOST
+#if !defined(HOST)
 #error "Included host side implementation of header file in target build! Remove the path of this file from your include paths."
 #endif
 

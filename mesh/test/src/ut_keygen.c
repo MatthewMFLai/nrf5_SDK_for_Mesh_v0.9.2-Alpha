@@ -41,7 +41,7 @@
 #include "nrf_mesh_keygen.h"
 
 /*****************************************************************************
-* Test vectors (from the Sample data section in the specification)
+* Test vectors (from the Sample data section in the Mesh Profile Specification v1.0)
 *****************************************************************************/
 
 #define APPLICATION_KEY    { 0x63, 0x96, 0x47, 0x71, 0x73, 0x4f, 0xbd, 0x76,\

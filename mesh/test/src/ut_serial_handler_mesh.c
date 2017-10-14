@@ -771,6 +771,7 @@ void test_events(void)
     dsm_handle_t dst_handle = 0xA0B0;
     dsm_handle_t subnet_handle = 0xF1E1;
     nrf_mesh_evt_t evt;
+    nrf_mesh_rx_metadata_t metadata;
     evt.type = NRF_MESH_EVT_MESSAGE_RECEIVED;
     evt.params.message.dst.type = NRF_MESH_ADDRESS_TYPE_GROUP;
     evt.params.message.dst.value = 0x8ABC;
@@ -778,9 +779,14 @@ void test_events(void)
     evt.params.message.src.type = NRF_MESH_ADDRESS_TYPE_UNICAST;
     evt.params.message.src.value = 0x1234;
     evt.params.message.src.p_virtual_uuid = NULL;
+    evt.params.message.p_metadata = &metadata;
+    metadata.source = NRF_MESH_RX_SOURCE_SCANNER;
+    metadata.params.scanner.adv_addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_PRIVATE_NON_RESOLVABLE;
+    metadata.params.scanner.rssi = -5;
+
     for (uint32_t i = 0; i < BLE_GAP_ADDR_LEN; i++)
     {
-        evt.params.message.adv_addr.addr[i] = i;
+        metadata.params.scanner.adv_addr.addr[i] = i;
     }
     uint8_t data[9];
     for (uint32_t i = 0; i < 9; i++)
@@ -798,11 +804,9 @@ void test_events(void)
     net.nid = 0x43;
     app.is_device_key = false;
     app.aid = 0x12;
-    evt.params.message.adv_addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_PRIVATE_NON_RESOLVABLE;
     evt.params.message.secmat.p_net = &net;
     evt.params.message.secmat.p_app = &app;
     evt.params.message.ttl = 0x84;
-    evt.params.message.rssi = -5;
     evt.params.message.length = sizeof(data);
     evt.params.message.p_buffer = data;
     m_expected_serial_tx = 1;
@@ -817,7 +821,7 @@ void test_events(void)
     m_expected_tx_packet.payload.evt.mesh.message_received.subnet_handle = subnet_handle;
     m_expected_tx_packet.payload.evt.mesh.message_received.actual_length = sizeof(data);
     memcpy(m_expected_tx_packet.payload.evt.mesh.message_received.data, data, sizeof(data));
-    memcpy(m_expected_tx_packet.payload.evt.mesh.message_received.adv_addr, evt.params.message.adv_addr.addr, BLE_GAP_ADDR_LEN);
+    memcpy(m_expected_tx_packet.payload.evt.mesh.message_received.adv_addr, metadata.params.scanner.adv_addr.addr, BLE_GAP_ADDR_LEN);
     serial_packet_buffer_get_ExpectAndReturn(m_expected_tx_packet.length, NULL,  NRF_SUCCESS);
     serial_packet_buffer_get_IgnoreArg_pp_packet();
     serial_packet_buffer_get_ReturnThruPtr_pp_packet(&p_packet);

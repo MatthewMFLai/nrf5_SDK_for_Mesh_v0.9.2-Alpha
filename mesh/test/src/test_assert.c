@@ -44,4 +44,3 @@
 nrf_mesh_assertion_handler_t m_assertion_handler;
 bool mesh_assert_expect;
 jmp_buf assert_jump_buf;
-

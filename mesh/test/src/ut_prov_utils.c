@@ -410,9 +410,10 @@ void test_generate_oob_data(void)
                 rand_hw_rng_get_IgnoreArg_p_result();
                 rand_hw_rng_get_ReturnMemThruPtr_p_result((uint8_t *) &rand_output[j], 4);
                 prov_utils_generate_oob_data(&m_ctx, auth_value);
-                uint32_t value = LE2BE32(rand_output[j] % (pow__(10, m_ctx.oob_size))); /*lint !e666 Function with side effects passed to macro */
+                uint32_t pow = pow__(10, m_ctx.oob_size);
+                uint32_t value = LE2BE32(rand_output[j] % pow);
                 memcpy(&expected_auth_value[PROV_AUTH_LEN - 4], &value, 4);
-                char outputstring[8];
+                char outputstring[16];
                 sprintf(outputstring, "%d", LE2BE32(value));
                 TEST_ASSERT_TRUE(strlen(outputstring) <= m_ctx.oob_size);
                 TEST_ASSERT_EQUAL_HEX8_ARRAY(expected_auth_value, auth_value, PROV_AUTH_LEN);
@@ -548,8 +549,10 @@ void test_options(void)
     memset(&opt_in, 0, sizeof(nrf_mesh_opt_t));
     opt_in.len = 1;
     opt_in.opt.val = 1;
-    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_PARAM, prov_utils_opt_set(NRF_MESH_OPT_RADIO_ACCESS_ADDR, &opt_in));
-    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_PARAM, prov_utils_opt_get(NRF_MESH_OPT_RADIO_ACCESS_ADDR, &opt_out));
+    /* invalid options for prov: */
+    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_PARAM, prov_utils_opt_set(NRF_MESH_OPT_NET_RELAY_ENABLE, &opt_in));
+    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_PARAM, prov_utils_opt_get(NRF_MESH_OPT_NET_RELAY_ENABLE, &opt_out));
+    /* valid options: */
     TEST_ASSERT_EQUAL(false, prov_utils_use_ecdh_offloading());
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, prov_utils_opt_set(NRF_MESH_OPT_PROV_ECDH_OFFLOADING, &opt_in));
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, prov_utils_opt_get(NRF_MESH_OPT_PROV_ECDH_OFFLOADING, &opt_out));

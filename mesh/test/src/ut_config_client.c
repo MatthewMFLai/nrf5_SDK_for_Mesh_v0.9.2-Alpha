@@ -610,7 +610,8 @@ void test_publication_set(void)
     ps.appkey_index = 3;
     ps.frendship_credential_flag = false;
     ps.publish_ttl = 4;
-    ps.publish_period = 5;
+    ps.publish_period.step_num = 5;
+    ps.publish_period.step_res = ACCESS_PUBLISH_RESOLUTION_100MS;
     ps.retransmit_count = 6;
     ps.retransmit_interval = 7;
     ps.model_id.company_id = 8;
@@ -623,7 +624,7 @@ void test_publication_set(void)
     msg.state.credential_flag = 0;
     msg.state.rfu = 0;
     msg.state.publish_ttl = ps.publish_ttl;
-    msg.state.publish_period = ps.publish_period;
+    msg.state.publish_period = ps.publish_period.step_res << 6u | ps.publish_period.step_num;
     msg.state.retransmit_count = ps.retransmit_count;
     msg.state.retransmit_interval = ps.retransmit_interval;
     msg.state.model_id.company_id = ps.model_id.company_id;
@@ -654,7 +655,8 @@ void test_publication_virtual_set(void)
     ps.appkey_index = 3;
     ps.frendship_credential_flag = false;
     ps.publish_ttl = 4;
-    ps.publish_period = 5;
+    ps.publish_period.step_num = 5;
+    ps.publish_period.step_res = ACCESS_PUBLISH_RESOLUTION_100MS;
     ps.retransmit_count = 6;
     ps.retransmit_interval = 7;
     ps.model_id.company_id = 8;
@@ -667,7 +669,7 @@ void test_publication_virtual_set(void)
     msg.state.credential_flag = 0;
     msg.state.rfu = 0;
     msg.state.publish_ttl = ps.publish_ttl;
-    msg.state.publish_period = ps.publish_period;
+    msg.state.publish_period = ps.publish_period.step_res << 6u | ps.publish_period.step_num;
     msg.state.retransmit_count = ps.retransmit_count;
     msg.state.retransmit_interval = ps.retransmit_interval;
     msg.state.model_id.company_id = ps.model_id.company_id;

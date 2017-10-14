@@ -35,6 +35,7 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <string.h>
 #include <unity.h>
 #include <cmock.h>
 
@@ -49,6 +50,8 @@ static uint32_t m_timer_sch_cb_expect;
 static uint32_t m_timestamp;
 static uint32_t m_timestamp_sch;
 static uint32_t m_flag_cb_expect;
+static uint32_t m_seq_cb_expect;
+static void * mp_seq_ctx = &m_seq_cb_expect;
 
 void setUp(void)
 {
@@ -57,6 +60,7 @@ void setUp(void)
     m_timer_cb_expect = 0;
     m_timer_sch_cb_expect = 0;
     m_flag_cb_expect = 0;
+    m_seq_cb_expect = 0;
 }
 
 void tearDown(void)
@@ -88,6 +92,13 @@ void flag_callback(void)
 {
     TEST_ASSERT_TRUE(m_flag_cb_expect > 0);
     m_flag_cb_expect--;
+}
+
+static void seq_callback(void* p_context)
+{
+    TEST_ASSERT_TRUE(m_seq_cb_expect > 0);
+    m_seq_cb_expect--;
+    TEST_ASSERT_EQUAL(mp_seq_ctx, p_context);
 }
 /*****************************************************************************
 * Tests
@@ -197,8 +208,36 @@ void test_critical_section(void)
 
 }
 
-void test_event_in_progress(void)
+void test_event_sequential(void)
 {
-    /* is always false on host */
-    TEST_ASSERT_FALSE(bearer_event_in_progress());
+    bearer_event_sequential_t seq;
+    memset(&seq, 0, sizeof(seq));
+    bearer_event_init();
+
+    /* Test situations that are expected to assert */
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_post(NULL));
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_post(&seq));
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_add(NULL, NULL, NULL));
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_add(&seq, NULL, NULL));
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_add(&seq, NULL, mp_seq_ctx));
+    TEST_NRF_MESH_ASSERT_EXPECT(bearer_event_sequential_pending(NULL));
+
+    /* Test successful initialization */
+    bearer_event_sequential_add(&seq, seq_callback, NULL);
+    bearer_event_sequential_add(&seq, seq_callback, mp_seq_ctx);
+    TEST_ASSERT_EQUAL(false, bearer_event_sequential_pending(&seq));
+
+    /* Test that event fires immediately if not inside a critical region */
+    m_seq_cb_expect = 1;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, bearer_event_sequential_post(&seq));
+    TEST_ASSERT_EQUAL(0, m_seq_cb_expect);
+
+    /* Test that event is delayed if inside a critical region */
+    bearer_event_critical_section_begin();
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, bearer_event_sequential_post(&seq));
+    TEST_ASSERT_EQUAL(NRF_ERROR_BUSY, bearer_event_sequential_post(&seq));
+    TEST_ASSERT_EQUAL(true, bearer_event_sequential_pending(&seq));
+    m_seq_cb_expect = 1;
+    bearer_event_critical_section_end();
+    TEST_ASSERT_EQUAL(0, m_seq_cb_expect);
 }

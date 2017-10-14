@@ -185,6 +185,11 @@ static void print_configuration(void)
     }
 }
 
+timestamp_t timer_now()
+{
+    return 0;
+}
+
 static access_model_handle_t init_test_model_and_subs_list(access_flash_test_struct_t * p_test_data)
 {
     access_model_handle_t model_handle;
@@ -301,7 +306,7 @@ static fm_entry_t * expect_flash_manager_entry(fm_handle_t handle, uint32_t data
     static uint8_t buffer[UINT16_MAX+1];
     static uint16_t buffer_index = 0;
     fm_entry_t * p_entry = (fm_entry_t *) &buffer[buffer_index];
-    buffer_index += sizeof(fm_entry_t) + data_length;
+    buffer_index += ALIGN_VAL((sizeof(fm_entry_t) + data_length), 4);
     flash_manager_entry_alloc_ExpectAndReturn(mp_flash_manager, handle, data_length, p_entry);
     flash_manager_entry_commit_Expect(p_entry);
     p_entry->header.handle = handle;
@@ -360,7 +365,9 @@ static uint32_t address_get_stub(dsm_handle_t handle, nrf_mesh_address_t * p_add
 {
     if (handle < ACCESS_ELEMENT_COUNT + ACCESS_MODEL_COUNT + SUBSCRIPTION_ADDRESS_COUNT)
     {
+        p_address->type = m_addresses[handle].type;
         p_address->value = m_addresses[handle].value;
+        p_address->p_virtual_uuid = m_addresses[handle].p_virtual_uuid;
         return NRF_SUCCESS;
     }
     else
@@ -446,6 +453,10 @@ static void send_msg(access_opcode_t opcode, const uint8_t * p_data, uint16_t le
     memcpy(&rx_buf[len], p_data, length);
 
     nrf_mesh_evt_t mesh_evt;
+    nrf_mesh_rx_metadata_t metadata;
+    memset(&metadata, 0, sizeof(metadata));
+    memset(&mesh_evt, 0, sizeof(mesh_evt));
+    mesh_evt.params.message.p_metadata = &metadata;
     mesh_evt.type = NRF_MESH_EVT_MESSAGE_RECEIVED;
     mesh_evt.params.message.p_buffer = rx_buf;
     mesh_evt.params.message.length = len + length;
@@ -466,7 +477,8 @@ static void send_msg(access_opcode_t opcode, const uint8_t * p_data, uint16_t le
     {
         mesh_evt.params.message.dst.type = NRF_MESH_ADDRESS_TYPE_GROUP;
         mesh_evt.params.message.dst.value = dst - ACCESS_ELEMENT_COUNT + GROUP_ADDRESS_START;
-        dsm_address_handle_get_ExpectAndReturn(&mesh_evt.params.message.dst, NULL, NRF_SUCCESS);
+        dsm_address_handle_get_ExpectAndReturn(NULL, NULL, NRF_SUCCESS);
+        dsm_address_handle_get_IgnoreArg_p_address();
         dsm_address_handle_get_IgnoreArg_p_address_handle();
         dsm_address_handle_get_ReturnThruPtr_p_address_handle(&dst);
         dsm_address_subscription_get_ExpectAndReturn(dst, true);
@@ -502,11 +514,31 @@ static void opcode_handler(access_model_handle_t handle, const access_message_rx
     uint16_t length = opcode_raw_write(reply.opcode, expected_data);
     memcpy(&expected_data[length], data, sizeof(data));
     length += sizeof(data);
-    expect_tx(expected_data,
-              length,
-              ELEMENT_ADDRESS_START + handle * ACCESS_ELEMENT_COUNT / ACCESS_MODEL_COUNT,
-              p_message->meta_data.src.value,
-              p_message->meta_data.appkey_handle);
+
+    dsm_address_handle_get_ExpectAnyArgsAndReturn(NRF_ERROR_NOT_FOUND);
+
+    /* If the received packet is a loopbacked packet, the reply will not be sent on the air: */
+    if (p_message->length == strlen("loopback") && memcmp(p_message->p_data, "loopback", strlen("loopback")) == 0)
+    {
+        /* First call is for the transmission of the reply: */
+        dsm_local_unicast_addresses_get_Expect(NULL);
+        dsm_local_unicast_addresses_get_IgnoreArg_p_address();
+        dsm_local_unicast_addresses_get_ReturnThruPtr_p_address(&local_addresses);
+
+        /* Second call is for the reception of the reply: */
+        dsm_local_unicast_addresses_get_Expect(NULL);
+        dsm_local_unicast_addresses_get_IgnoreArg_p_address();
+        dsm_local_unicast_addresses_get_ReturnThruPtr_p_address(&local_addresses);
+    }
+    else
+    {
+        expect_tx(expected_data,
+                  length,
+                  ELEMENT_ADDRESS_START + handle * ACCESS_ELEMENT_COUNT / ACCESS_MODEL_COUNT,
+                  p_message->meta_data.src.value,
+                  p_message->meta_data.appkey_handle);
+    }
+
     TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_reply(handle, p_message, &reply));
 }
 
@@ -632,6 +664,7 @@ void setUp(void)
     flash_manager_mem_listener_register_StubWithCallback(flash_manager_mem_listener_register_stub);
     flash_manager_add_StubWithCallback(flash_manager_add_stub);
     access_reliable_init_Expect();
+    access_publish_init_Expect();
     access_init();
 }
 
@@ -725,7 +758,7 @@ void test_rx_tx(void)
 {
     build_device_setup(ACCESS_ELEMENT_COUNT, ACCESS_MODEL_COUNT);
 
-    access_opcode_t opcode = {0, ACCESS_COMPANY_ID_NONE};
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
     const uint8_t data[] = "Hello, World!";
     const uint16_t data_length = sizeof(data);
     const uint32_t MODELS_PER_ELEMENT = ((ACCESS_MODEL_COUNT + ACCESS_ELEMENT_COUNT - 1)/ACCESS_ELEMENT_COUNT);
@@ -751,8 +784,7 @@ void test_rx_tx(void)
     }
 
     /* Test unknowns as well. */
-    const access_opcode_t u_opcodes[] = {{0x8234, ACCESS_COMPANY_ID_NONE},
-                                         {(0x12 | 0xC0), 0x1336}};
+    const access_opcode_t u_opcodes[] = { ACCESS_OPCODE_SIG(0x8234), ACCESS_OPCODE_VENDOR((0x12 | 0xc0), 0x1336) };
     for (uint32_t i = 0; i < sizeof(u_opcodes) / sizeof(access_opcode_t); ++i)
     {
         send_msg(u_opcodes[i], data, data_length, 0, 0);
@@ -767,11 +799,128 @@ void test_rx_tx(void)
     TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_subscription_add(0, ACCESS_ELEMENT_COUNT + ACCESS_MODEL_COUNT));
 }
 
+void test_unicast_loopback(void)
+{
+    build_device_setup(ACCESS_ELEMENT_COUNT, ACCESS_MODEL_COUNT);
+
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
+    const uint8_t data[] = "loopback";
+    const uint16_t data_length = strlen((const char *) data);
+
+    /* Set publish address handle to 0: */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish_address_set(0, 0));
+
+    access_message_tx_t message =
+    {
+        .opcode = opcode, /*lint !e64 Type mismatch */
+        .p_buffer = data,
+        .length = data_length
+    };
+
+    /* This function is called once when sending the packet... */
+    dsm_local_unicast_addresses_get_Expect(NULL);
+    dsm_local_unicast_addresses_get_IgnoreArg_p_address();
+    dsm_local_unicast_addresses_get_ReturnThruPtr_p_address(&local_addresses);
+
+    /* and once when the packet is received again: */
+    dsm_local_unicast_addresses_get_Expect(NULL);
+    dsm_local_unicast_addresses_get_IgnoreArg_p_address();
+    dsm_local_unicast_addresses_get_ReturnThruPtr_p_address(&local_addresses);
+
+    /* Set publish address to the element's own address: */
+    nrf_mesh_address_t destination = { NRF_MESH_ADDRESS_TYPE_UNICAST, ELEMENT_ADDRESS_START };
+    dsm_address_get_ExpectAndReturn(0, NULL, NRF_SUCCESS);
+    dsm_address_get_IgnoreArg_p_address();
+    dsm_address_get_ReturnThruPtr_p_address(&destination);
+    access_reliable_message_rx_cb_ExpectAnyArgs();
+    expect_msg(opcode, (uint32_t) TEST_REFERENCE, data, data_length);
+
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish(0, &message));
+}
+
+void test_group_loopback(void)
+{
+    build_device_setup(ACCESS_ELEMENT_COUNT, ACCESS_MODEL_COUNT);
+
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
+    const uint8_t data[] = "loopback";
+    const uint16_t data_length = strlen((const char *) data);
+    dsm_handle_t address_handle = ACCESS_ELEMENT_COUNT + ACCESS_MODEL_COUNT + 1;
+
+    /* Set publish address handle to 0 and subscribe to it: */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish_address_set(0, address_handle));
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_subscription_add(0, address_handle));
+
+    access_message_tx_t message =
+    {
+        .opcode = opcode, /*lint !e64 Type mismatch */
+        .p_buffer = data,
+        .length = data_length
+    };
+
+    dsm_address_subscription_get_ExpectAndReturn(address_handle, true);
+
+    dsm_address_handle_get_ExpectAnyArgsAndReturn(NRF_SUCCESS);
+    dsm_address_handle_get_ReturnThruPtr_p_address_handle(&address_handle);
+    dsm_address_subscription_get_ExpectAndReturn(address_handle, true);
+
+    expect_msg(opcode, (uint32_t) TEST_REFERENCE, data, data_length);
+
+    const uint8_t raw_packet_data[] = "\x00loopback";
+    expect_tx(raw_packet_data, data_length + 1 /* opcode */, ELEMENT_ADDRESS_START, m_addresses[address_handle].value, 0);
+
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish(0, &message));
+}
+
+void test_virtual_loopback(void)
+{
+    build_device_setup(ACCESS_ELEMENT_COUNT, ACCESS_MODEL_COUNT);
+
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
+    const uint8_t data[] = "loopback";
+    const uint16_t data_length = strlen((const char *) data);
+    dsm_handle_t address_handle = ACCESS_ELEMENT_COUNT + ACCESS_MODEL_COUNT + 1;
+
+    /* Replace the current address in the address array with a virtual address: */
+    nrf_mesh_address_t temp = m_addresses[address_handle];
+    const uint8_t label_uuid[] = { 0xf4, 0xa0, 0x02, 0xc7, 0xfb, 0x1e, 0x4c, 0xa0, 0xa4, 0x69, 0xa0, 0x21, 0xde, 0x0d, 0xb8, 0x75 };
+    m_addresses[address_handle].type = NRF_MESH_ADDRESS_TYPE_VIRTUAL;
+    m_addresses[address_handle].value = 0x9736;
+    m_addresses[address_handle].p_virtual_uuid = label_uuid;
+
+    /* Set publish address handle to 0 and subscribe to it: */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish_address_set(0, address_handle));
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_subscription_add(0, address_handle));
+
+    access_message_tx_t message =
+    {
+        .opcode = opcode, /*lint !e64 Type mismatch */
+        .p_buffer = data,
+        .length = data_length
+    };
+
+    dsm_address_subscription_get_ExpectAndReturn(address_handle, true);
+
+    dsm_address_handle_get_ExpectAnyArgsAndReturn(NRF_SUCCESS);
+    dsm_address_handle_get_ReturnThruPtr_p_address_handle(&address_handle);
+    dsm_address_subscription_get_ExpectAndReturn(address_handle, true);
+
+    expect_msg(opcode, (uint32_t) TEST_REFERENCE, data, data_length);
+
+    const uint8_t raw_packet_data[] = "\x00loopback";
+    expect_tx(raw_packet_data, data_length + 1 /* opcode */, ELEMENT_ADDRESS_START, m_addresses[address_handle].value, 0);
+
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_publish(0, &message));
+
+    /* Restore the previous address to the address array: */
+    m_addresses[address_handle] = temp;
+}
+
 void test_key_access(void)
 {
     build_device_setup(ACCESS_ELEMENT_COUNT, ACCESS_MODEL_COUNT);
 
-    access_opcode_t opcode = {0, ACCESS_COMPANY_ID_NONE};
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
     uint8_t data[] = "Hello, World!";
     uint16_t data_length = sizeof(data);
 
@@ -796,7 +945,7 @@ void test_group_addressing(void)
     /* Let the two last models share their lists. */
     TEST_ASSERT_EQUAL(NRF_SUCCESS, access_model_subscription_lists_share(ACCESS_MODEL_COUNT-2, ACCESS_MODEL_COUNT-1));
 
-    access_opcode_t opcode = {0, ACCESS_COMPANY_ID_NONE};
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
     uint8_t data[] = "Hello, World!";
     uint16_t data_length = sizeof(data);
 
@@ -827,9 +976,7 @@ void test_model_publish(void)
 {
     access_message_tx_t message;
     const uint8_t data[] = "Hello, World";
-    const access_opcode_t opcodes[] = {{0x0040, ACCESS_COMPANY_ID_NONE},
-                                       {0x8123, ACCESS_COMPANY_ID_NONE},
-                                       {0x0C0, 0x1337}};
+    const access_opcode_t opcodes[] = { ACCESS_OPCODE_SIG(0x0040), ACCESS_OPCODE_SIG(0x8123), ACCESS_OPCODE_VENDOR(0x0c0, 0x1337) };
     const unsigned num_opcodes = sizeof(opcodes) / sizeof(access_opcode_t);
     message.opcode.opcode = opcodes[0].opcode;
     message.opcode.company_id =opcodes[0].company_id;
@@ -925,7 +1072,7 @@ void test_error_conditions(void)
 
     /* Sanity checking. */
     const uint8_t data[] = "Test Data";
-    access_opcode_t opcode = {0, ACCESS_COMPANY_ID_NONE};
+    access_opcode_t opcode = ACCESS_OPCODE_SIG(0);
     expect_msg(opcode, (uint32_t) TEST_REFERENCE, data, sizeof(data));
 
     send_msg(opcode, data, sizeof(data), ADDRESS_COUNT-1, DSM_APP_MAX + DSM_DEVICE_MAX-1);
@@ -1317,6 +1464,7 @@ void test_flash_load_reload(void)
     }
 
     /********************************* Reset access and lose all data:*****************************/
+    access_publish_init_Expect();
     access_reliable_init_Expect();
     access_init();
     /* Check that elements are un populated */
@@ -1411,6 +1559,7 @@ void test_flash_load_reload(void)
     TEST_ASSERT_EQUAL(location_element2, location);
 
     /* Adding models before a restore is also accepted. */
+    access_publish_init_Expect();
     access_reliable_init_Expect();
     access_init();
     /* Add models first before restore*/

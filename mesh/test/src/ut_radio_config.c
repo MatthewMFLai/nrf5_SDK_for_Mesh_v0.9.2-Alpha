@@ -71,7 +71,7 @@ void tearDown(void)
 }
 
 /**
- * As defined by BT core specification  version 4.2 Vol 6, part B, section 1.4.1:
+ * As defined by Bluetooth Core Specification v4.2 Vol 6, part B, section 1.4.1:
  * this function will convert the given channel index to a frequency offset;
  * offset from 2400 MHz.
  */
@@ -112,11 +112,7 @@ static void m_radio_config_reset_state_verify(void)
 static void m_radio_config_config_state_verify(radio_config_t my_radio_config, uint32_t lflen, uint32_t s0len, uint32_t s1len)
 {
     TEST_ASSERT_EQUAL(my_radio_config.tx_power, m_radio.TXPOWER);
-    TEST_ASSERT_EQUAL(my_radio_config.datarate, m_radio.MODE);
-    TEST_ASSERT_EQUAL(my_radio_config.access_addr, (m_radio.BASE0 >> 8) | ((m_radio.PREFIX0<<24ul) & (0xFFu <<24ul)));
-    /* The config should use the first address for both TX and RX */
-    TEST_ASSERT_EQUAL(0, m_radio.TXADDRESS);
-    TEST_ASSERT_EQUAL(1, m_radio.RXADDRESSES);
+    TEST_ASSERT_EQUAL(my_radio_config.radio_mode, m_radio.MODE);
     uint32_t expected_packet_conf_reg0 = (lflen << RADIO_PCNF0_LFLEN_Pos) |
                                          (s1len << RADIO_PCNF0_S1LEN_Pos) |
                                          (s0len << RADIO_PCNF0_S0LEN_Pos);
@@ -139,20 +135,18 @@ void test_radio_config(void)
     /* Configure radio with common config settings */
     radio_config_t my_radio_config =
     {
-        .access_addr = BEARER_ADV_ACCESS_ADDR,
         .tx_power = RADIO_POWER_NRF_NEG4DBM,
-        .payload_maxlen = RADIO_CONFIG_ADV_MAX_PDU_SIZE,
-        .datarate = RADIO_MODE_BLE_1MBIT
+        .payload_maxlen = RADIO_CONFIG_ADV_MAX_PAYLOAD_SIZE,
+        .radio_mode = RADIO_MODE_BLE_1MBIT
     };
     radio_config_config(&my_radio_config);
     m_radio_config_reset_state_verify();
     m_radio_config_config_state_verify(my_radio_config, 6, 1, 2);
 
     /* Try a different configuration */
-    my_radio_config.datarate = RADIO_MODE_NRF_2MBIT;
+    my_radio_config.radio_mode = RADIO_MODE_NRF_2MBIT;
     my_radio_config.tx_power = RADIO_POWER_NRF_NEG30DBM;
-    my_radio_config.payload_maxlen = RADIO_CONFIG_ADV_MAX_PDU_SIZE + 1;
-    my_radio_config.access_addr = 0x29ABCDEF;
+    my_radio_config.payload_maxlen = RADIO_CONFIG_ADV_MAX_PAYLOAD_SIZE + 1;
     radio_config_config(&my_radio_config);
     m_radio_config_reset_state_verify();
     /* LF should be 8bits now that we have a large packet length */
@@ -190,10 +184,9 @@ void test_radio_config_unhappy(void)
     /* Configure radio with common config settings */
     radio_config_t my_radio_config =
     {
-        .access_addr = BEARER_ADV_ACCESS_ADDR,
         .tx_power = RADIO_POWER_NRF_NEG4DBM,
-        .payload_maxlen = RADIO_CONFIG_ADV_MAX_PDU_SIZE,
-        .datarate = RADIO_MODE_BLE_1MBIT
+        .payload_maxlen = RADIO_CONFIG_ADV_MAX_PAYLOAD_SIZE,
+        .radio_mode = RADIO_MODE_BLE_1MBIT
     };
 
     /* Radio config shouuld not accept 0 payload length */
@@ -210,11 +203,11 @@ void test_radio_config_unhappy(void)
     radio_config_config(&my_radio_config);
 
     /* Test that the radio config is not happy with invalid modes */
-    my_radio_config.datarate = RADIO_MODE_BLE_1MBIT + 1; /*lint !e64 Invalid value for enum */
-#ifdef NRF52
+    my_radio_config.radio_mode = RADIO_MODE_BLE_1MBIT + 1; /*lint !e64 Invalid value for enum */
+#ifdef NRF52_SERIES
     radio_config_config(&my_radio_config);
     m_radio_config_config_state_verify(my_radio_config, 6, 1, 2);
-    my_radio_config.datarate = RADIO_MODE_NRF_62K5BIT + 1; /*lint !e64 Invalid value for enum */
+    my_radio_config.radio_mode = RADIO_MODE_NRF_62K5BIT + 1; /*lint !e64 Invalid value for enum */
 #endif
     TEST_NRF_MESH_ASSERT_EXPECT(radio_config_config(&my_radio_config));
 

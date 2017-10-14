@@ -1,0 +1,17 @@
+; ****************************************
+; *** Scatter-Loading Description File ***
+; ****************************************
+
+; Scatter file for a program IN APPLICATION SPACE, accessing the softdevice
+; through SVCs.
+
+LR_IROM1 0x00024000 0x000D400 {  ; Load region size_region
+  ER_IROM1 0x00024000 0x000D4000 { ; Reserve 0x8000 for the bootloader
+   *.o (RESET, +First)
+   *(InRoot$$Sections)
+   .ANY (+RO)
+  }
+
+  RW_IRAM1 0x200031B8 0x0003AE4A { ; Reserve 0x1000 for the bootloader
+   .ANY (+RW +ZI)
+  }

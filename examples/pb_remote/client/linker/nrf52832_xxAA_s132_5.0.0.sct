@@ -1,0 +1,18 @@
+; ****************************************
+; *** Scatter-Loading Description File ***
+; ****************************************
+
+; Scatter file for a program IN APPLICATION SPACE, accessing the softdevice
+; through SVCs.
+
+LR_IROM1 0x00023000 0x0005D000 {  ; Load region size_region
+  ER_IROM1 0x00023000 0x0005D000 {
+   *.o (RESET, +First)
+   *(InRoot$$Sections)
+   .ANY (+RO)
+  }
+
+  RW_IRAM1 0x200031B0 0x0000CE50 {
+   .ANY (+RW +ZI)
+  }
+}

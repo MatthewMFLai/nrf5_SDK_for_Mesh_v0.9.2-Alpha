@@ -40,7 +40,7 @@
 #include <time.h>
 
 #include <pthread.h>
-#include <nrf_error.h>
+#include "nrf_error.h"
 
 #include "mttest.h"
 

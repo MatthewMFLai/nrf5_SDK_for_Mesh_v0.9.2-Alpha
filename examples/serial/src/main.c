@@ -39,7 +39,6 @@
 #include <stdint.h>
 
 #include "ble.h"
-#include "SEGGER_RTT.h"
 
 #include "log.h"
 #include "nrf_mesh.h"
@@ -50,9 +49,9 @@
 #include "device_state_manager.h"
 #include "nrf_mesh_serial.h"
 #include "nrf_mesh_sdk.h"
-#include <nrf_delay.h>
-#include <nrf_gpio.h>
-#include <boards.h>
+#include "nrf_delay.h"
+#include "nrf_gpio.h"
+#include "boards.h"
 
 /********** Application Functionality **********/
 
@@ -76,22 +75,7 @@ int main(void)
         nrf_delay_ms(100);
     }
 
-#if defined(S130) || defined(S132)
-    nrf_clock_lf_cfg_t lfc_cfg = {NRF_CLOCK_LF_SRC_XTAL, 0, 0, NRF_CLOCK_LF_XTAL_ACCURACY_20_PPM};
-#elif defined(S110)
-    nrf_clock_lfclksrc_t lfc_cfg = NRF_CLOCK_LFCLKSRC_XTAL_20_PPM;
-#endif
-    mesh_softdevice_setup(lfc_cfg);
-
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing mesh stack...\n");
-    nrf_mesh_init_params_t mesh_init_params = {
-        .lfclksrc = lfc_cfg,
-        .assertion_handler = mesh_assert_handler
-    };
-    ERROR_CHECK(nrf_mesh_init(&mesh_init_params));
-
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling mesh stack...\n");
-    ERROR_CHECK(nrf_mesh_enable());
+    mesh_core_setup();
 
     /* Initialize dsm and access */
     dsm_init();
@@ -99,7 +83,7 @@ int main(void)
 
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling ECDH offloading...\n");
     nrf_mesh_opt_t value = {.len = 4, .opt.val = 1 };
-    nrf_mesh_opt_set(NRF_MESH_OPT_PROV_ECDH_OFFLOADING, &value);
+    ERROR_CHECK(nrf_mesh_opt_set(NRF_MESH_OPT_PROV_ECDH_OFFLOADING, &value));
 
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling serial interface...\n");
     ERROR_CHECK(nrf_mesh_serial_init(NULL));
@@ -110,6 +94,6 @@ int main(void)
 
     while (true)
     {
-        nrf_mesh_process();
+        (void)nrf_mesh_process();
     }
 }

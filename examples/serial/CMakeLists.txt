@@ -1,50 +1,50 @@
-get_testname(targetname)
+set(target "serial_${PLATFORM}_${SOFTDEVICE}")
 
-set(SRCS
-    "src/main.c"
+add_executable(${target}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c"
     "${MBTLE_SOURCE_DIR}/examples/nrf_mesh_sdk.c"
-    "${MBTLE_SRCS_ACCESS}"
-    "${MBTLE_SRCS_SERIAL}"
-    "${MBTLE_SRCS_PROV}"
-    "${MBTLE_SRCS_PB_ADV_ER}"
-    "${MBTLE_SRCS_PB_ADV_EE}"
-    )
+    ${PROV_PROVISIONER_SOURCE_FILES}
+    ${PROV_PROVISIONEE_SOURCE_FILES}
+    ${PROV_COMMON_SOURCE_FILES}
+    ${ACCESS_SOURCE_FILES}
+    ${SERIAL_SOURCE_FILES}
+    ${WEAK_SOURCE_FILES}
+    ${${PLATFORM}_SOURCE_FILES})
 
-include_directories(
-    include
-    "${MBTLE_LIB_HEADERS}"
-    "${MBTLE_SRC_HEADERS}"
+target_include_directories(${target} PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${MBTLE_SOURCE_DIR}/examples"
-    )
+    "${SDK_ROOT}/components/drivers_nrf/delay"
+    ${PROV_INCLUDE_DIRS}
+    ${ACCESS_INCLUDE_DIRS}
+    ${SERIAL_INCLUDE_DIRS}
+    ${${BOARD}_INCLUDE_DIRS}
+    ${${SOFTDEVICE}_INCLUDE_DIRS})
 
-add_definitions(
-    ${MBTLE_DEFINITIONS}
-    )
+set_target_link_options(${target}
+    ${CMAKE_CURRENT_SOURCE_DIR}/linker/${PLATFORM}_${SOFTDEVICE})
 
-# MBTLE-1279 Add multi-platform support for example projects
-if (HWID STREQUAL "51")
-    add_definitions("-DBOARD_PCA10031")
-elseif (HWID STREQUAL "52")
-    add_definitions("-DBOARD_PCA10040")
-else()
-    message(FATAL_ERROR "${HWID}")
-endif ()
+target_compile_options(${target} PUBLIC
+    ${${ARCH}_DEFINES})
 
-set(exec_name "${targetname}")
-add_executable_platforms("${exec_name}" ${SRCS})
+target_compile_definitions(${target} PUBLIC
+    ${USER_DEFINITIONS}
+    ${${PLATFORM}_DEFINES}
+    ${${SOFTDEVICE}_DEFINES}
+    ${${BOARD}_DEFINES})
 
-# Libraries are Linked in order of increasing dependency.
-target_link_libraries_platforms(${exec_name}
-    # MBTLE_PB_ADV_ER
-    # MBTLE_PB_ADV_EE
-    # MBTLE_PB_REM_CL
-    # MBTLE_PB_REM_SV
-    # MBTLE_SERIAL
-    MBTLE_CORE
-    UECC_LIB
-    RTT_LIB
-    )
+target_link_libraries(${target}
+    mesh_core_${PLATFORM}
+    uECC_${PLATFORM}
+    rtt_${PLATFORM})
 
-set_platform_compile_properties(${exec_name})
-create_hex_platform(${exec_name})
-add_flash_target(${exec_name})
+create_hex(${target})
+add_flash_target(${target})
+
+get_property(core_include_dirs TARGET mesh_core_${PLATFORM} PROPERTY INCLUDE_DIRECTORIES)
+get_property(target_include_dirs TARGET ${target} PROPERTY INCLUDE_DIRECTORIES)
+add_pc_lint(${target}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c"
+    "${target_include_dirs};${core_include_dirs}"
+    "${${PLATFORM}_DEFINES};${${SOFTDEVICE}_DEFINES};${${BOARD}_DEFINES}")
+add_ses_project(${target})

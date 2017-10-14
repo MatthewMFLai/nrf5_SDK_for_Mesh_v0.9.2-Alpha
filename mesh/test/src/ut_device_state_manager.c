@@ -51,6 +51,11 @@
 #include "net_state_mock.h"
 #include "flash_manager_mock.h"
 
+/* Enable this to check that the handle ordering is as expected (0..N-1). */
+#define TEST_EXPLICIT_ORDERING 1
+#define VIRTUAL_ADDR            0x8080
+#define VIRTUAL_ADDRESS_AMOUNT  3
+
 /** Non-VLA version of a dsm flash entry */
 typedef struct
 {
@@ -61,7 +66,7 @@ typedef struct
 nrf_mesh_assertion_handler_t m_assertion_handler;
 
 static flash_manager_t * mp_flash_manager;
-
+static uint32_t m_flash_expect_calls;
 static flash_manager_page_t m_flash_area[2];
 static dsm_entry_t * mp_multiple_expect_prev = NULL;
 static fm_mem_listener_t * mp_mem_listener;
@@ -97,6 +102,7 @@ void setUp(void)
 {
     m_assertion_handler = nrf_mesh_assertion_handler;
     m_fm_mem_listener_register_expect = 0;
+    m_flash_expect_calls = 0;
     nrf_mesh_mock_Init();
     nrf_mesh_keygen_mock_Init();
     flash_manager_mock_Init();
@@ -119,6 +125,8 @@ void tearDown(void)
 {
     flash_manager_remove_IgnoreAndReturn(NRF_SUCCESS);
     dsm_clear();
+
+    TEST_ASSERT_EQUAL_MESSAGE(0, m_flash_expect_calls, "Not all expected flash operations called");
     nrf_mesh_mock_Verify();
     nrf_mesh_mock_Destroy();
     nrf_mesh_keygen_mock_Verify();
@@ -161,8 +169,11 @@ fm_entry_t * flash_manager_entry_alloc_cb(flash_manager_t * p_manager,
 {
     TEST_ASSERT_NOT_NULL(p_manager);
     TEST_ASSERT_EQUAL_PTR(mp_flash_manager, p_manager);
+
     if (m_expected_flash_data.verify_contents)
     {
+        TEST_ASSERT_NOT_EQUAL_MESSAGE(0, m_flash_expect_calls, "Flash entry alloc called when not expected");
+        m_flash_expect_calls--;
         TEST_ASSERT_EQUAL(m_expected_flash_data.data_length, data_length);
         if (m_expected_flash_data.flash_group == 0)
         {
@@ -204,10 +215,10 @@ static void flash_expect(void * p_expected_data, uint32_t data_length)
 {
     TEST_ASSERT_EQUAL_MESSAGE(NULL, m_expected_flash_data.p_data, "The previous flash operation has not been finished yet.");
     m_expected_flash_data.data_length = data_length;
-
+    m_expected_flash_data.verify_contents = true;
     m_expected_flash_data.p_data = malloc(data_length);
     memcpy(m_expected_flash_data.p_data, p_expected_data, data_length);
-
+    m_flash_expect_calls++;
     flash_manager_entry_alloc_StubWithCallback(flash_manager_entry_alloc_cb);
     flash_manager_entry_commit_StubWithCallback(flash_manager_entry_commit_cb);
 }
@@ -2240,4 +2251,211 @@ void test_flash_insufficient_resources(void)
     /* Flash the last one, the listener shouldn't register this time. */
     mp_mem_listener->callback(mp_mem_listener->p_args);
     TEST_ASSERT_FALSE(dsm_has_unflashed_data());
+}
+
+
+void test_storage_ordering_addresses(void)
+{
+    const uint16_t raw_addresses[4] = {0x1234, 0x1237, 0x1643, 0x043f};
+    dsm_handle_t handles[8] = {DSM_HANDLE_INVALID};
+
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        flash_expect_addr_nonvirtual(raw_addresses[i]);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_add(raw_addresses[i], &handles[i]));
+    }
+
+    dsm_handle_t stored_handles[8] = {DSM_HANDLE_INVALID};
+    uint32_t count = 8;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_get_all(stored_handles, &count));
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(handles, stored_handles, count);
+
+    const struct
+    {
+        uint16_t value;
+        uint8_t uuid[NRF_MESH_UUID_SIZE];
+    } virtual_addr[4] = {
+        {.value = 0x8034, {1}},
+        {.value = 0x8037, {2}},
+        {.value = 0x8043, {3}},
+        {.value = 0x803f, {4}}
+    };
+
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        nrf_mesh_keygen_virtual_address_ExpectAndReturn(virtual_addr[i].uuid, NULL, NRF_SUCCESS);
+        nrf_mesh_keygen_virtual_address_IgnoreArg_p_address();
+        flash_expect_addr_virtual(virtual_addr[i].uuid);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_virtual_add(virtual_addr[i].uuid, &handles[i+count]));
+    }
+
+    memset(stored_handles, 0xFF, sizeof(stored_handles));
+    count = 8;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_get_all(stored_handles, &count));
+    TEST_ASSERT_EQUAL(8, count);
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(handles, stored_handles, count);
+
+#if TEST_EXPLICIT_ORDERING
+    /* We use our superpowers to know that the virtual addresses start after the end of the non-virtuals. */
+    const dsm_handle_t expected_handles[8] = {0, 1, 2, 3,
+                                              DSM_NONVIRTUAL_ADDR_MAX, /* Virtual addresses. */
+                                              DSM_NONVIRTUAL_ADDR_MAX + 1,
+                                              DSM_NONVIRTUAL_ADDR_MAX + 2,
+                                              DSM_NONVIRTUAL_ADDR_MAX + 3};
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected_handles, stored_handles, count);
+#endif
+}
+
+void test_storage_ordering_subnets(void)
+{
+    const struct
+    {
+        mesh_key_index_t key_id;
+        uint8_t key[NRF_MESH_KEY_SIZE];
+    } subnets[4] = {
+        {.key_id = 0, .key = {0}},
+        {.key_id = 1, .key = {1}},
+        {.key_id = 2, .key = {2}},
+        {.key_id = 3, .key = {3}}
+    };
+    dsm_handle_t handles[4] = {DSM_HANDLE_INVALID};
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        nrf_mesh_keygen_network_secmat_ExpectAndReturn(subnets[i].key, NULL, NRF_SUCCESS);
+        nrf_mesh_keygen_network_secmat_IgnoreArg_p_secmat();
+        nrf_mesh_keygen_beacon_secmat_ExpectAndReturn(subnets[i].key, NULL, NRF_SUCCESS);
+        nrf_mesh_keygen_beacon_secmat_IgnoreArg_p_secmat();
+        flash_expect_subnet(subnets[i].key, subnets[i].key_id);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_subnet_add(subnets[i].key_id, subnets[i].key, &handles[i]));
+    }
+    dsm_handle_t stored_handles[4] = {DSM_HANDLE_INVALID};
+    uint32_t count = 4;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_subnet_get_all(stored_handles, &count));
+    TEST_ASSERT_EQUAL(4, count);
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(handles, stored_handles, count);
+
+#if TEST_EXPLICIT_ORDERING
+    const dsm_handle_t expected_handles[4] = {0, 1, 2, 3};
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected_handles, stored_handles, count);
+#endif
+}
+
+
+void test_storage_ordering_appkeys(void)
+{
+    const struct
+    {
+        mesh_key_index_t key_id;
+        uint8_t key[NRF_MESH_KEY_SIZE];
+    } appkeys[4] = {
+        {.key_id = 0, .key = {0}},
+        {.key_id = 1, .key = {1}},
+        {.key_id = 2, .key = {2}},
+        {.key_id = 3, .key = {3}}
+    };
+
+    const struct
+    {
+        mesh_key_index_t key_id;
+        uint8_t key[NRF_MESH_KEY_SIZE];
+    } subnet = {0, {0}};
+    nrf_mesh_keygen_network_secmat_ExpectAndReturn(subnet.key, NULL, NRF_SUCCESS);
+    nrf_mesh_keygen_network_secmat_IgnoreArg_p_secmat();
+    nrf_mesh_keygen_beacon_secmat_ExpectAndReturn(subnet.key, NULL, NRF_SUCCESS);
+    nrf_mesh_keygen_beacon_secmat_IgnoreArg_p_secmat();
+    flash_expect_subnet(subnet.key, subnet.key_id);
+    dsm_handle_t subnet_handle;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_subnet_add(subnet.key_id, subnet.key, &subnet_handle));
+
+    dsm_handle_t handles[4] = {DSM_HANDLE_INVALID};
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        nrf_mesh_keygen_aid_ExpectAndReturn(appkeys[i].key, NULL, NRF_SUCCESS);
+        nrf_mesh_keygen_aid_IgnoreArg_p_aid();
+        flash_expect_appkey(appkeys[i].key, appkeys[i].key_id, subnet_handle);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_appkey_add(appkeys[i].key_id, subnet_handle, appkeys[i].key, &handles[i]));
+    }
+    dsm_handle_t stored_handles[4] = {DSM_HANDLE_INVALID};
+    uint32_t count = 4;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_appkey_get_all(0, stored_handles, &count));
+    TEST_ASSERT_EQUAL(4, count);
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(handles, stored_handles, count);
+
+#if TEST_EXPLICIT_ORDERING
+    const dsm_handle_t expected_handles[4] = {0, 1, 2, 3};
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected_handles, stored_handles, count);
+#endif
+}
+
+void test_walking_through_uuid(void)
+{
+    uint16_t virtual_address = VIRTUAL_ADDR;
+    dsm_handle_t address_handle[VIRTUAL_ADDRESS_AMOUNT];
+    uint8_t virtual_uuid[VIRTUAL_ADDRESS_AMOUNT][NRF_MESH_UUID_SIZE] =
+    {
+        {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f},
+        {0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f},
+        {0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f}
+    };
+
+    for (uint8_t iter = 0; iter < VIRTUAL_ADDRESS_AMOUNT; iter++)
+    {
+        nrf_mesh_keygen_virtual_address_ExpectAndReturn(&virtual_uuid[iter][0], NULL, NRF_SUCCESS);
+        nrf_mesh_keygen_virtual_address_IgnoreArg_p_address();
+        nrf_mesh_keygen_virtual_address_ReturnThruPtr_p_address(&virtual_address);
+        flash_manager_entry_alloc_IgnoreAndReturn(NULL);
+        flash_manager_mem_listener_register_Ignore();
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_subscription_virtual_add(&virtual_uuid[iter][0], &address_handle[iter]));
+    }
+
+    nrf_mesh_address_t addr =
+    {
+        .type = NRF_MESH_ADDRESS_TYPE_INVALID,
+        .p_virtual_uuid = NULL
+    };
+
+    for (uint8_t iter = 0; iter < VIRTUAL_ADDRESS_AMOUNT; iter++)
+    {
+        TEST_ASSERT_TRUE(nrf_mesh_rx_address_get(virtual_address, &addr));
+        TEST_ASSERT_EQUAL(NRF_MESH_ADDRESS_TYPE_VIRTUAL, addr.type);
+        TEST_ASSERT_TRUE(memcmp(addr.p_virtual_uuid, &virtual_uuid[iter][0], NRF_MESH_UUID_SIZE) == 0);
+    }
+
+    TEST_ASSERT_FALSE(nrf_mesh_rx_address_get(virtual_address, &addr));
+}
+
+void test_invalid_address_lookup(void)
+{
+    const uint16_t raw_addresses[4] = {0x1234, 0x1237, 0x1643, 0x043f};
+    dsm_handle_t handles[8] = {DSM_HANDLE_INVALID};
+
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        flash_expect_addr_nonvirtual(raw_addresses[i]);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_add(raw_addresses[i], &handles[i]));
+    }
+
+    for (uint32_t i = 0; i < 4; ++i)
+    {
+        flash_invalidate_expect(DSM_HANDLE_TO_FLASH_HANDLE(DSM_FLASH_GROUP_ADDR_NONVIRTUAL, handles[i]));
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_remove(handles[i]));
+    }
+
+    /* The address should be removed, thus a new flash operation is expected. */
+    flash_expect_addr_nonvirtual(raw_addresses[1]);
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_add(raw_addresses[1], &handles[0]));
+
+    /* This should just bump the alloc counter. */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_publish_add(raw_addresses[1], &handles[0]));
+
+    dsm_handle_t stored_handles[1];
+    uint32_t count = 1;
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, dsm_address_get_all(stored_handles, &count));
+    TEST_ASSERT_EQUAL(1, count);
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(handles, stored_handles, count);
+#if TEST_EXPLICIT_ORDERING
+    /* We use our superpowers to know that the virtual addresses start after the end of the non-virtuals. */
+    const dsm_handle_t expected_handles[1] = {0};
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected_handles, stored_handles, 1);
+#endif
 }

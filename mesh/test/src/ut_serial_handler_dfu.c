@@ -315,16 +315,7 @@ void test_event_rx(void)
     uint8_t packet[NRF_MESH_SERIAL_PACKET_OVERHEAD + NRF_MESH_SERIAL_PAYLOAD_MAXLEN];
     serial_packet_t * p_packet = (serial_packet_t *) packet;
 
-    /* Unprovisioned received */
     nrf_mesh_evt_t evt;
-    evt.type = NRF_MESH_EVT_UNPROVISIONED_RECEIVED;
-    for (uint8_t i = 0; i < 16; i++)
-        evt.params.unprov_recv.device_uuid[i] = i;
-    for (uint8_t i = 0; i < 6; i++)
-        evt.params.unprov_recv.adv_addr.addr[i] = i;
-    evt.params.unprov_recv.gatt_supported = true;
-    evt.params.unprov_recv.rssi = -78;
-
     /* DFU fw outdated */
     memset(&m_expected_packet, 0, sizeof(serial_packet_t));
     memset(&evt, 0, sizeof(nrf_mesh_evt_t));

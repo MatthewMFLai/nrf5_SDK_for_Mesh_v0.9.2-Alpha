@@ -65,55 +65,55 @@
 #define ENC_TEST_K4_INPUT_DATA_2  { 0x63, 0x96, 0x47, 0x71, 0x73, 0x4f, 0xbd, 0x76, 0xe3, 0xb4, 0x05, 0x19, 0xd1, 0xd9, 0x4a, 0x48 }
 #define ENC_TEST_K4_RESULT_DATA_2 0x26
 
-/* Nonce test vectors constructed from the sample messages from the specification: */
-#define EXPECTED_NET(...) { __VA_ARGS__ }
-#define EXPECTED_APP(...) { __VA_ARGS__ }
-#define NONCE_TV(test_ctl, test_ttl, test_seq, test_src, test_dst, test_ivi, aszmic, expected_net, expected_app) \
-    {{.ctl = test_ctl, .ttl = test_ttl, .src = LE2BE16(test_src), .dst = LE2BE16(test_dst), .seq = LE2BE24(test_seq)}, \
-        .iv_index = LE2BE32(test_ivi), .net_nonce = expected_net, .app_nonce = expected_app }
+/* Nonce test vectors constructed from the sample messages in the Mesh Profile Specification v1.0: */
+#define EXPECTED_ARRAY(...) { __VA_ARGS__ }
+#define EXPECTED_NET(...) EXPECTED_ARRAY(__VA_ARGS__)
+#define EXPECTED_APP(...) EXPECTED_ARRAY(__VA_ARGS__)
+#define NONCE_TV(test_ctl, test_ttl, test_seq, test_src, test_dst_type, test_dst, test_ivi, aszmic, expected_net, expected_app) \
+    {.metadata = {.control_packet = test_ctl, .ttl = test_ttl, .src = test_src, .dst = {.type = test_dst_type, .value = test_dst}, .internal = {.sequence_number = test_seq, .iv_index = test_ivi}}, \
+        .net_nonce = expected_net, .app_nonce = expected_app }
 /*lint -save -e572 -e648 Ignore overflow and excessive shifts in the initialization below */
 static const struct
 {
-    packet_net_hdr_t p_header;
-    uint32_t iv_index;
+    network_packet_metadata_t metadata;
     uint8_t  aszmic : 1;
     uint8_t  net_nonce[CCM_NONCE_LENGTH];
     uint8_t  app_nonce[CCM_NONCE_LENGTH];
 } nonce_test_vectors[] = {
     /* Test message #6: */
-    NONCE_TV(0, 4, 0x3129ab, 0x0003, 0x1201, 0x12345678, 0,
+    NONCE_TV(0, 4, 0x3129ab, 0x0003, NRF_MESH_ADDRESS_TYPE_UNICAST, 0x1201, 0x12345678, 0,
             EXPECTED_NET(0x00, 0x04, 0x31, 0x29, 0xab, 0x00, 0x03, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78),
             EXPECTED_APP(0x02, 0x00, 0x31, 0x29, 0xab, 0x00, 0x03, 0x12, 0x01, 0x12, 0x34, 0x56, 0x78)),
     /* Test message #16: */
-    NONCE_TV(0, 11, 0x000006, 0x1201, 0x0003, 0x12345678, 0,
+    NONCE_TV(0, 11, 0x000006, 0x1201, NRF_MESH_ADDRESS_TYPE_UNICAST, 0x0003, 0x12345678, 0,
             EXPECTED_NET(0x00, 0x0b, 0x00, 0x00, 0x06, 0x12, 0x01, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78),
             EXPECTED_APP(0x02, 0x00, 0x00, 0x00, 0x06, 0x12, 0x01, 0x00, 0x03, 0x12, 0x34, 0x56, 0x78)),
     /* Test message #18: */
-    NONCE_TV(0, 3, 0x000007, 0x1201, 0xffff, 0x12345678, 0,
+    NONCE_TV(0, 3, 0x000007, 0x1201, NRF_MESH_ADDRESS_TYPE_GROUP, 0xffff, 0x12345678, 0,
             EXPECTED_NET(0x00, 0x03, 0x00, 0x00, 0x07, 0x12, 0x01, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78),
             EXPECTED_APP(0x01, 0x00, 0x00, 0x00, 0x07, 0x12, 0x01, 0xff, 0xff, 0x12, 0x34, 0x56, 0x78)),
     /* Test message #19: */
-    NONCE_TV(0, 3, 0x000009, 0x1201, 0xffff, 0x12345678, 0,
+    NONCE_TV(0, 3, 0x000009, 0x1201, NRF_MESH_ADDRESS_TYPE_GROUP, 0xffff, 0x12345678, 0,
             EXPECTED_NET(0x00, 0x03, 0x00, 0x00, 0x09, 0x12, 0x01, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78),
             EXPECTED_APP(0x01, 0x00, 0x00, 0x00, 0x09, 0x12, 0x01, 0xff, 0xff, 0x12, 0x34, 0x56, 0x78)),
     /* Test message #20: */
-    NONCE_TV(0, 3, 0x070809, 0x1234, 0xffff, 0x12345677, 0,
+    NONCE_TV(0, 3, 0x070809, 0x1234, NRF_MESH_ADDRESS_TYPE_GROUP, 0xffff, 0x12345677, 0,
             EXPECTED_NET(0x00, 0x03, 0x07, 0x08, 0x09, 0x12, 0x34, 0x00, 0x00, 0x12, 0x34, 0x56, 0x77),
             EXPECTED_APP(0x01, 0x00, 0x07, 0x08, 0x09, 0x12, 0x34, 0xff, 0xff, 0x12, 0x34, 0x56, 0x77)),
     /* Test message #21: */
-    NONCE_TV(0, 3, 0x07080a, 0x1234, 0x8105, 0x12345677, 0,
+    NONCE_TV(0, 3, 0x07080a, 0x1234, NRF_MESH_ADDRESS_TYPE_VIRTUAL, 0x8105, 0x12345677, 0,
             EXPECTED_NET(0x00, 0x03, 0x07, 0x08, 0x0a, 0x12, 0x34, 0x00, 0x00, 0x12, 0x34, 0x56, 0x77),
             EXPECTED_APP(0x01, 0x00, 0x07, 0x08, 0x0a, 0x12, 0x34, 0x81, 0x05, 0x12, 0x34, 0x56, 0x77)),
     /* Test message #22: */
-    NONCE_TV(0, 3, 0x07080b, 0x1234, 0xb529, 0x12345677, 0,
+    NONCE_TV(0, 3, 0x07080b, 0x1234, NRF_MESH_ADDRESS_TYPE_VIRTUAL, 0xb529, 0x12345677, 0,
             EXPECTED_NET(0x00, 0x03, 0x07, 0x08, 0x0b, 0x12, 0x34, 0x00, 0x00, 0x12, 0x34, 0x56, 0x77),
             EXPECTED_APP(0x01, 0x00, 0x07, 0x08, 0x0b, 0x12, 0x34, 0xb5, 0x29, 0x12, 0x34, 0x56, 0x77)),
     /* Test message #23: */
-    NONCE_TV(0, 3, 0x07080c, 0x1234, 0x9736, 0x12345677, 0,
+    NONCE_TV(0, 3, 0x07080c, 0x1234, NRF_MESH_ADDRESS_TYPE_VIRTUAL, 0x9736, 0x12345677, 0,
             EXPECTED_NET(0x00, 0x03, 0x07, 0x08, 0x0c, 0x12, 0x34, 0x00, 0x00, 0x12, 0x34, 0x56, 0x77),
             EXPECTED_APP(0x01, 0x00, 0x07, 0x08, 0x0c, 0x12, 0x34, 0x97, 0x36, 0x12, 0x34, 0x56, 0x77)),
     /* Test message #24: */
-    NONCE_TV(0, 3, 0x07080d, 0x1234, 0x9736, 0x12345677, 1,
+    NONCE_TV(0, 3, 0x07080d, 0x1234, NRF_MESH_ADDRESS_TYPE_VIRTUAL, 0x9736, 0x12345677, 1,
             EXPECTED_NET(0x00, 0x03, 0x07, 0x08, 0x0d, 0x12, 0x34, 0x00, 0x00, 0x12, 0x34, 0x56, 0x77),
             EXPECTED_APP(0x01, 0x00, 0x07, 0x08, 0x0d, 0x12, 0x34, 0x97, 0x36, 0x12, 0x34, 0x56, 0x77))
 };
@@ -133,18 +133,18 @@ void test_enc_nonce_generate(void)
     for (unsigned int i = 0; i < num_vectors; ++i)
     {
         uint8_t output_buf[CCM_NONCE_LENGTH];
-        enc_nonce_generate(&nonce_test_vectors[i].p_header, nonce_test_vectors[i].iv_index,
+        enc_nonce_generate(&nonce_test_vectors[i].metadata,
                 ENC_NONCE_NET, nonce_test_vectors[i].aszmic /* this bit is ignored for network nonces */, output_buf);
         TEST_ASSERT_EQUAL_HEX8_ARRAY(nonce_test_vectors[i].net_nonce, output_buf, CCM_NONCE_LENGTH);
 
         if (nonce_test_vectors[i].app_nonce[0] == ENC_NONCE_APP) /* Use the expected result to choose application/device nonce */
         {
-            enc_nonce_generate(&nonce_test_vectors[i].p_header, nonce_test_vectors[i].iv_index,
+            enc_nonce_generate(&nonce_test_vectors[i].metadata,
                     ENC_NONCE_APP, nonce_test_vectors[i].aszmic, output_buf);
         }
         else
         {
-            enc_nonce_generate(&nonce_test_vectors[i].p_header, nonce_test_vectors[i].iv_index,
+            enc_nonce_generate(&nonce_test_vectors[i].metadata,
                     ENC_NONCE_DEV, nonce_test_vectors[i].aszmic, output_buf);
         }
         TEST_ASSERT_EQUAL_HEX8_ARRAY(nonce_test_vectors[i].app_nonce, output_buf, CCM_NONCE_LENGTH);

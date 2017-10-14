@@ -218,7 +218,7 @@ def start_ipython(options):
 
 if __name__ == '__main__':
     parser = ArgumentParser(
-        description="nRF5 SDK for Bluetooth Mesh Interactive PyACI")
+        description="nRF5 SDK for Mesh Interactive PyACI")
     parser.add_argument("-d", "--device",
                         dest="devices",
                         nargs="+",

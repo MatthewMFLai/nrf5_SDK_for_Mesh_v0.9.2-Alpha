@@ -44,7 +44,7 @@ void test_uart_tx(void)
 {
     serial_packet_t * p_packet;
     packet_buffer_packet_t * p_buf_packet = (packet_buffer_packet_t *) m_buffer;
-    packet_buffer_packet_t * p_buf_packet2 = (packet_buffer_packet_t *) &m_buffer[sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t)];
+    packet_buffer_packet_t * p_buf_packet2 = (packet_buffer_packet_t *) &m_buffer[ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), 4)];
     p_packet = (serial_packet_t*)test_data;
     packet_buffer_reserve_ExpectAndReturn(NULL, NULL, sizeof(test_data), NRF_SUCCESS);
     packet_buffer_reserve_IgnoreArg_p_buffer();

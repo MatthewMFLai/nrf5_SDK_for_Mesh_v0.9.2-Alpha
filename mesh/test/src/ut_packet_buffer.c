@@ -48,7 +48,7 @@ nrf_mesh_assertion_handler_t m_assertion_handler;
 #define MEM_BLOCK_SIZE 2048
 #define DEFAULT_PACKET_LEN 40
 #define REPETITION_TEST_MAX_COUNT 100000
-static uint8_t memory_block[MEM_BLOCK_SIZE];
+static uint8_t memory_block[MEM_BLOCK_SIZE] __attribute__((aligned(WORD_SIZE)));
 
 
 /* Struct for packet and size pairs. */
@@ -456,4 +456,157 @@ void test_packet_buffer_skip(void)
         TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, status);
         TEST_ASSERT_EQUAL(1, no_popped);
     }
+}
+
+/* Test edge case where head == tail and there's not enough space left in the buffer to fit the
+ * new packet.
+ */
+void test_packet_buffer_empty_near_end(void)
+{
+    const uint32_t packet_header_size = sizeof(packet_buffer_packet_t);
+    packet_buffer_t my_pacman;
+    packet_buffer_packet_t * p_my_packet;
+
+    packet_buffer_init(&my_pacman, memory_block, MEM_BLOCK_SIZE);
+
+    const uint16_t remaining_size = packet_header_size + 4;
+
+    struct
+    {
+        uint16_t size;
+        uint16_t expected_offset; /**< Expected offset of the returned packet */
+        bool succeed;
+    } vectors[] = {
+         {remaining_size, 0, true}, /* will not fit because of the header, must wrap around. */
+         {remaining_size - packet_header_size, MEM_BLOCK_SIZE - remaining_size, true}, /* will fit perfectly */
+         {remaining_size + 4, 0, true}, /* too big, must wrap around */
+         {MEM_BLOCK_SIZE - packet_header_size - remaining_size, 0, true}, /* Should fit after wrap around */
+         {MEM_BLOCK_SIZE - packet_header_size, 0, false} /* Won't fit, as the end of the buffer is marked as skipped */
+        };
+    for (uint32_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++)
+    {
+        char fail_msg[128];
+        sprintf(fail_msg, "Failed at iteration %d, size is %d", i, vectors[i].size);
+        my_pacman.head = MEM_BLOCK_SIZE - remaining_size;
+        my_pacman.tail = MEM_BLOCK_SIZE - remaining_size;
+        packet_buffer_packet_t * p_current_head = ((packet_buffer_packet_t *)&memory_block[my_pacman.head]);
+        p_current_head->packet_state = PACKET_BUFFER_MEM_STATE_FREE;
+#if PACKET_BUFFER_DEBUG_MODE
+        /* fake the seal, to give the impression that we got here in a normal fashion. */
+        p_current_head->seal = 0x5ea15ea1;
+#endif
+        uint32_t status = packet_buffer_reserve(&my_pacman, &p_my_packet, vectors[i].size);
+        if (vectors[i].succeed)
+        {
+            TEST_ASSERT_EQUAL_MESSAGE(vectors[i].expected_offset, (uint8_t *)p_my_packet - memory_block, fail_msg);
+            TEST_ASSERT_EQUAL_MESSAGE(NRF_SUCCESS, status, fail_msg);
+            packet_buffer_commit(&my_pacman, p_my_packet, vectors[i].size);
+        }
+        else
+        {
+            TEST_ASSERT_EQUAL_MESSAGE(NRF_ERROR_NO_MEM, status, fail_msg);
+        }
+    }
+}
+
+void test_packet_buffer_flush(void)
+{
+    packet_buffer_t my_pacman;
+    packet_buffer_packet_t * p_packet;
+
+    packet_buffer_init(&my_pacman, memory_block, MEM_BLOCK_SIZE);
+
+    uint8_t lengths[] = {8, 4, 13, 1, 12};
+
+    /***** Empty buffer *****/
+    packet_buffer_flush(&my_pacman);
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+
+    /***** No popped, no reserved packets *****/
+    for (uint32_t i = 0; i < sizeof(lengths); ++i)
+    {
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, lengths[i]));
+        packet_buffer_commit(&my_pacman, p_packet, lengths[i]);
+    }
+
+    packet_buffer_flush(&my_pacman);
+
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+
+    /* No popped packets, one reserved packet */
+    for (uint32_t i = 0; i < sizeof(lengths); ++i)
+    {
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, lengths[i]));
+        packet_buffer_commit(&my_pacman, p_packet, lengths[i]);
+    }
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, 10));
+
+    packet_buffer_flush(&my_pacman);
+
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+    packet_buffer_commit(&my_pacman, p_packet, 10);
+    /* pop the reserved packet */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_pop(&my_pacman, &p_packet));
+    packet_buffer_free(&my_pacman, p_packet);
+    /* Now there's nothing again */
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+
+
+    /***** No popped packets, one reserved packet *****/
+    for (uint32_t i = 0; i < sizeof(lengths); ++i)
+    {
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, lengths[i]));
+        packet_buffer_commit(&my_pacman, p_packet, lengths[i]);
+    }
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, 10));
+
+    packet_buffer_flush(&my_pacman);
+
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+    /* Free the reserved packet again */
+    packet_buffer_free(&my_pacman, p_packet);
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+
+    /***** one popped packet, no reserved packets *****/
+    for (uint32_t i = 0; i < sizeof(lengths); ++i)
+    {
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, lengths[i]));
+        packet_buffer_commit(&my_pacman, p_packet, lengths[i]);
+    }
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_pop(&my_pacman, &p_packet));
+
+    packet_buffer_flush(&my_pacman);
+
+    packet_buffer_free(&my_pacman, p_packet);
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+    /* Verify that we can reserve+free again */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, 10));
+    packet_buffer_free(&my_pacman, p_packet);
+
+    /***** one popped packet, multiple reserved packets *****/
+    for (uint32_t i = 0; i < sizeof(lengths); ++i)
+    {
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, lengths[i]));
+        packet_buffer_commit(&my_pacman, p_packet, lengths[i]);
+    }
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_pop(&my_pacman, &p_packet));
+    packet_buffer_packet_t * p_reserved_packets[2];
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_reserved_packets[0], 10));
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_reserved_packets[1], 10));
+
+    packet_buffer_flush(&my_pacman);
+    /* Free the popped packet */
+    packet_buffer_free(&my_pacman, p_packet);
+    /* No more committed packets in the queue */
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+    /* Commit the reserved packets */
+    packet_buffer_commit(&my_pacman, p_reserved_packets[0], 10);
+    packet_buffer_commit(&my_pacman, p_reserved_packets[1], 10);
+    /* Flush them again */
+    packet_buffer_flush(&my_pacman);
+    TEST_ASSERT_EQUAL(NRF_ERROR_NOT_FOUND, packet_buffer_pop(&my_pacman, &p_packet));
+
+    /* Verify that we can reserve+free again */
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, packet_buffer_reserve(&my_pacman, &p_packet, 10));
+    packet_buffer_free(&my_pacman, p_packet);
 }

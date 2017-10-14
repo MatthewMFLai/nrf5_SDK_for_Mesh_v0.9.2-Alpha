@@ -460,7 +460,7 @@ void test_length_check(void)
 {
     uint32_t length[PROV_PDU_TYPE_COUNT];
 
-    /* Lengths from the specification sample data, including the opcode field */
+    /* Lengths from the Mesh Profile Specification v1.0 sample data, including the opcode field */
     length[PROV_PDU_TYPE_INVITE]         = 2;
     length[PROV_PDU_TYPE_CAPABILITIES]   = 12;
     length[PROV_PDU_TYPE_START]          = 6;

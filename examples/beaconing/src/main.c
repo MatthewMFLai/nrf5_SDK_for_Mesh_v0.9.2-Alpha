@@ -35,65 +35,55 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <nrf_delay.h>
-#include <nrf_gpio.h>
-#include <ble.h>
-#include <boards.h>
+
 #include <stdio.h>
 
-#include "nrf_mesh.h"
-#include <nrf_mesh_opt.h>
+#include "nrf_delay.h"
+#include "nrf_gpio.h"
+#include "ble.h"
+#include "boards.h"
 
-#include "utils.h"
+#include "nrf_mesh.h"
+
 #include "log.h"
-#include "SEGGER_RTT.h"
 
 #include "nrf_mesh_sdk.h"
-#include "utils.h"
-
-#include "nrf_mesh_dfu.h"
-#include "nrf_mesh_serial.h"
 
 /* For beaconing advertiser */
-#include "bearer_adv.h"
-#include "packet_mgr.h"
+#include "advertiser.h"
 
 
 #if defined(NRF51) && defined(NRF_MESH_STACK_DEPTH)
 #include "stack_depth.h"
 #endif
 
+#define ADVERTISER_BUFFER_SIZE  (128)
+
 /** Single advertiser instance. May periodically transmit one packet at a time. */
 static advertiser_t m_advertiser;
-
+static uint8_t m_adv_buffer[ADVERTISER_BUFFER_SIZE];
 
 static void rx_callback(const nrf_mesh_adv_packet_rx_data_t * p_rx_data)
 {
     LEDS_OFF(BSP_LED_0_MASK);  /* @c LED_RGB_RED_MASK on pca10031 */
     char msg[128];
-    sprintf(msg, "RX [@%u]: RSSI: %3d ADV TYPE: %x ADDR: [%02x:%02x:%02x:%02x:%02x:%02x]",
-            p_rx_data->timestamp,
-            p_rx_data->rssi,
-            p_rx_data->adv_type,
-            p_rx_data->addr.addr[0],
-            p_rx_data->addr.addr[1],
-            p_rx_data->addr.addr[2],
-            p_rx_data->addr.addr[3],
-            p_rx_data->addr.addr[4],
-            p_rx_data->addr.addr[5]);
+    (void) sprintf(msg, "RX [@%u]: RSSI: %3d ADV TYPE: %x ADDR: [%02x:%02x:%02x:%02x:%02x:%02x]",
+                   p_rx_data->p_metadata->params.scanner.timestamp,
+                   p_rx_data->p_metadata->params.scanner.rssi,
+                   p_rx_data->adv_type,
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[0],
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[1],
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[2],
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[3],
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[4],
+                   p_rx_data->p_metadata->params.scanner.adv_addr.addr[5]);
     __LOG_XB(LOG_SRC_APP, LOG_LEVEL_INFO, msg, p_rx_data->p_payload, p_rx_data->length);
     LEDS_ON(BSP_LED_0_MASK);  /* @c LED_RGB_RED_MASK on pca10031 */
 }
 
 static void init_advertiser(void)
 {
-    /* Configure advertiser */
-    m_advertiser.adv_channel_map = 0x07; /* All three advertisement channels */
-    m_advertiser.adv_int_min_ms = 100;
-    m_advertiser.adv_int_max_ms = 110;
-    m_advertiser.adv_packet_type = BLE_PACKET_TYPE_ADV_NONCONN_IND;
-
-    bearer_adv_advertiser_init(&m_advertiser);
+    advertiser_instance_init(&m_advertiser, NULL, m_adv_buffer, ADVERTISER_BUFFER_SIZE);
 }
 
 static void start_advertiser(void)
@@ -121,20 +111,15 @@ static void start_advertiser(void)
     };
 
     /* Allocate packet */
-    packet_t * p_packet;
-    ERROR_CHECK(packet_mgr_alloc((packet_generic_t*) &p_packet, BLE_ADV_PACKET_HEADER_LENGTH + BLE_ADV_PACKET_OVERHEAD + sizeof(adv_data)));
-
+    adv_packet_t * p_packet = advertiser_packet_alloc(&m_advertiser, sizeof(adv_data));
     if (p_packet)
     {
         /* Construct packet contents */
-        packet_payload_size_set(p_packet, sizeof(adv_data));
-        memcpy(p_packet->payload, adv_data, sizeof(adv_data));
+        memcpy(p_packet->packet.payload, adv_data, sizeof(adv_data));
         /* Repeat forever */
-        if (bearer_adv_tx(&m_advertiser, p_packet, BEARER_ADV_REPEAT_INFINITE) != NRF_SUCCESS)
-        {
-            /* TX failed, free the packet */
-            packet_mgr_free(p_packet);
-        }
+        p_packet->config.repeats = ADVERTISER_REPEAT_INFINITE;
+
+        advertiser_packet_send(&m_advertiser, p_packet);
     }
 
 }
@@ -153,21 +138,7 @@ int main(void)
     __LOG_INIT(LOG_SRC_APP, LOG_LEVEL_INFO, log_callback_rtt);
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "----- Bluetooth Mesh Beacon Example -----\n");
 
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing softdevice...\n");
-#if defined(S130) || defined(S132)
-    nrf_clock_lf_cfg_t lfc_cfg = {NRF_CLOCK_LF_SRC_XTAL, 0, 0, NRF_CLOCK_LF_XTAL_ACCURACY_20_PPM};
-#elif defined(S110)
-    nrf_clock_lfclksrc_t lfc_cfg = NRF_CLOCK_LFCLKSRC_XTAL_20_PPM;
-#endif
-    mesh_softdevice_setup(lfc_cfg);
-
-
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing mesh stack...\n");
-    nrf_mesh_init_params_t mesh_init_params = {
-        .lfclksrc = lfc_cfg,
-        .assertion_handler = mesh_assert_handler
-    };
-    ERROR_CHECK(nrf_mesh_init(&mesh_init_params));
+    mesh_core_setup();
 
     /* Start listening for incoming packets */
     nrf_mesh_rx_cb_set(rx_callback);
@@ -175,13 +146,10 @@ int main(void)
     init_advertiser();
     start_advertiser();
 
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling mesh stack...\n");
-    ERROR_CHECK(nrf_mesh_enable());
-
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initialization complete!\n");
 
     while (true)
     {
-        nrf_mesh_process();
+        (void)nrf_mesh_process();
     }
 }

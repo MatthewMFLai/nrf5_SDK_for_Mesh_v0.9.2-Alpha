@@ -39,26 +39,23 @@
 #include <unity.h>
 
 #include "beacon.h"
-#include "packet_mgr_mock.h"
-#include "bearer_adv_mock.h"
 #include "net_beacon_mock.h"
 #include "prov_beacon_mock.h"
+#include "advertiser_mock.h"
 #include "nrf_mesh_assert.h"
 
+#define BEACON_PACKET_ALLOC_OVERHEAD (2 /* AD data */ + 1 /* Beacon overhead */)
 void setUp(void)
 {
-    packet_mgr_mock_Init();
-    bearer_adv_mock_Init();
+    advertiser_mock_Init();
     net_beacon_mock_Init();
     prov_beacon_mock_Init();
 }
 
 void tearDown(void)
 {
-    packet_mgr_mock_Verify();
-    packet_mgr_mock_Destroy();
-    bearer_adv_mock_Verify();
-    bearer_adv_mock_Destroy();
+    advertiser_mock_Verify();
+    advertiser_mock_Destroy();
     net_beacon_mock_Verify();
     net_beacon_mock_Destroy();
     prov_beacon_mock_Verify();
@@ -71,52 +68,45 @@ void tearDown(void)
 void test_beacon_create()
 {
     uint8_t dummy_data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
-    packet_t packet;
-    packet_generic_t* p_packet = &packet;
-    packet_mgr_alloc_ExpectAndReturn(NULL,
-            sizeof(dummy_data) + 3 /* header */ + 6 /* adv addr */ + 2 /* AD-header */ + 1 /* beacon type */, NRF_SUCCESS);
-    packet_mgr_alloc_IgnoreArg_pp_buffer();
-    packet_mgr_alloc_ReturnThruPtr_pp_buffer(&p_packet);
-    p_packet = beacon_create(0x43, dummy_data, sizeof(dummy_data));
+    adv_packet_t packet;
+    adv_packet_t * p_packet;
+    advertiser_t adv;
+    advertiser_packet_alloc_ExpectAndReturn(&adv, BEACON_PACKET_ALLOC_OVERHEAD + sizeof(dummy_data), &packet);
+    p_packet = beacon_create(&adv, 0x43, dummy_data, sizeof(dummy_data));
     TEST_ASSERT_EQUAL_PTR(&packet, p_packet);
-    TEST_ASSERT_EQUAL_HEX8(6 /* adv addr */ + sizeof(dummy_data) + 1 /* AD len */ + 1 /* AD type */ + 1 /* beacon type */, packet.header.length);
-    TEST_ASSERT_EQUAL_HEX8(sizeof(dummy_data) + 1 /* ad type */ + 1 /* beacon type */, packet.payload[0]);
-    TEST_ASSERT_EQUAL_HEX8(AD_TYPE_BEACON, packet.payload[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x43, packet.payload[2]);
-    TEST_ASSERT_EQUAL_HEX8_ARRAY(dummy_data, &packet.payload[3], sizeof(dummy_data));
+    TEST_ASSERT_EQUAL_HEX8(sizeof(dummy_data) + 1 /* ad type */ + 1 /* beacon type */, packet.packet.payload[0]);
+    TEST_ASSERT_EQUAL_HEX8(AD_TYPE_BEACON, packet.packet.payload[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x43, packet.packet.payload[2]);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(dummy_data, &packet.packet.payload[3], sizeof(dummy_data));
 
     /* Test illegal params */
-    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(0x43, NULL, sizeof(dummy_data)));
-    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(0x43, dummy_data, 0));
-    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(BEACON_TYPE_INVALID, dummy_data, sizeof(dummy_data)));
-    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(0x43, dummy_data, 100));
-    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(0x43, dummy_data, BEACON_DATA_MAXLEN + 1));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(NULL, 0x43, dummy_data, sizeof(dummy_data)));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(&adv, 0x43, NULL, sizeof(dummy_data)));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(&adv, 0x43, dummy_data, 0));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(&adv, BEACON_TYPE_INVALID, dummy_data, sizeof(dummy_data)));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(&adv, 0x43, dummy_data, 100));
+    TEST_ASSERT_EQUAL_PTR(NULL, beacon_create(&adv, 0x43, dummy_data, BEACON_DATA_MAXLEN + 1));
 }
 
-void test_beacon_pkt_in()
+void test_beacon_packet_in()
 {
-    uint8_t beacon_data[] = {0x06, AD_TYPE_BEACON, BEACON_TYPE_UNPROV, 0x01, 0x02, 0x03, 0x04};
-    packet_meta_t meta = {}; // don't really care about contents
-    prov_beacon_unprov_pkt_in_Expect(&beacon_data[3], 4, &meta);
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, beacon_pkt_in((ble_ad_data_t*) beacon_data, &meta));
+    uint8_t beacon_data[] = {BEACON_TYPE_UNPROV, 0x01, 0x02, 0x03, 0x04};
+    nrf_mesh_rx_metadata_t meta; // don't really care about contents
+    prov_beacon_unprov_packet_in_Expect(&beacon_data[1], 4, &meta);
+    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, beacon_packet_in(beacon_data, sizeof(beacon_data), &meta));
 
-    beacon_data[2] = BEACON_TYPE_SEC_NET_BCAST;
-    net_beacon_pkt_in_Expect(&beacon_data[3], 4, &meta);
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, beacon_pkt_in((ble_ad_data_t*) beacon_data, &meta));
+    beacon_data[0] = BEACON_TYPE_SEC_NET_BCAST;
+    net_beacon_packet_in_Expect(&beacon_data[1], 4, &meta);
+    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, beacon_packet_in(beacon_data, sizeof(beacon_data), &meta));
 
-    beacon_data[2] = 0x43;
-    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_DATA, beacon_pkt_in((ble_ad_data_t*) beacon_data, &meta));
-    beacon_data[2] = BEACON_TYPE_SEC_NET_BCAST;
-    beacon_data[0] = 0x01;
-    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_LENGTH, beacon_pkt_in((ble_ad_data_t*) beacon_data, &meta));
-    beacon_data[0] = 0x06;
-    beacon_data[1] = 0x16; /* invalid AD type */
-    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_DATA, beacon_pkt_in((ble_ad_data_t*) beacon_data, &meta));
+    beacon_data[0] = 0x43;
+    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_DATA, beacon_packet_in(beacon_data, sizeof(beacon_data), &meta));
+    beacon_data[0] = BEACON_TYPE_SEC_NET_BCAST;
+    TEST_ASSERT_EQUAL_HEX32(NRF_ERROR_INVALID_LENGTH, beacon_packet_in(beacon_data, 0, &meta));
+    /* NULL metadata */
+    net_beacon_packet_in_Expect(&beacon_data[1], 4, NULL);
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, beacon_packet_in(beacon_data, sizeof(beacon_data), NULL));
 
-    beacon_data[1] = AD_TYPE_BEACON;
-    net_beacon_pkt_in_Expect(&beacon_data[3], 4, NULL);
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, beacon_pkt_in((ble_ad_data_t*) beacon_data, NULL));
-
-    TEST_NRF_MESH_ASSERT_EXPECT(beacon_pkt_in((ble_ad_data_t*) NULL, NULL));
+    TEST_NRF_MESH_ASSERT_EXPECT(beacon_packet_in(NULL, sizeof(beacon_data), &meta));
 }
 

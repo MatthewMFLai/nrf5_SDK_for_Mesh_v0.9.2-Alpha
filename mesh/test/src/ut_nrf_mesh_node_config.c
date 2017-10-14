@@ -48,10 +48,13 @@
 #include "flash_manager_mock.h"
 #include "config_server_mock.h"
 #include "device_state_manager_mock.h"
+#include "health_server_mock.h"
 #include "net_state_mock.h"
 #include "nrf_mesh_mock.h"
 #include "nrf_mesh_events_mock.h"
 #include "nrf_mesh_prov_mock.h"
+
+#define TEST_COMPANY_ID 0xf00d
 
 /********** Additional mock functions **********/
 
@@ -82,11 +85,22 @@ uint32_t sd_nvic_EnableIRQ(IRQn_Type IRQn)
     return NRF_SUCCESS;
 }
 
+uint32_t sd_softdevice_is_enabled(uint8_t * p_is_enabled)
+{
+    *p_is_enabled = 1;
+    return NRF_SUCCESS;
+}
+
 nrf_mesh_assertion_handler_t m_assertion_handler;
 void nrf_mesh_assertion_handler(uint32_t pc)
 {
     printf("Mesh assertion at 0x%.08x\n", pc);
     TEST_FAIL_MESSAGE("Mesh assertion triggered");
+}
+
+static void dummy_attention_cb(const health_server_t * p_server, bool enable)
+{
+
 }
 
 /********** Test initialization and finalization **********/
@@ -98,6 +112,7 @@ void setUp(void)
     flash_manager_mock_Init();
     config_server_mock_Init();
     device_state_manager_mock_Init();
+    health_server_mock_Init();
     net_state_mock_Init();
     nrf_mesh_mock_Init();
     nrf_mesh_events_mock_Init();
@@ -109,16 +124,6 @@ void setUp(void)
 void tearDown(void)
 {
     access_mock_Verify();
-    access_config_mock_Verify();
-    flash_manager_mock_Verify();
-    config_server_mock_Verify();
-    device_state_manager_mock_Verify();
-    net_state_mock_Verify();
-    nrf_mesh_mock_Verify();
-    nrf_mesh_events_mock_Verify();
-    nrf_mesh_prov_mock_Verify();
-
-    access_mock_Verify();
     access_mock_Destroy();
     access_config_mock_Verify();
     access_config_mock_Destroy();
@@ -128,6 +133,8 @@ void tearDown(void)
     config_server_mock_Destroy();
     device_state_manager_mock_Verify();
     device_state_manager_mock_Destroy();
+    health_server_mock_Verify();
+    health_server_mock_Destroy();
     net_state_mock_Verify();
     net_state_mock_Destroy();
     nrf_mesh_mock_Verify();
@@ -151,6 +158,8 @@ void test_basic_configuration(void)
     config_params.p_data = test_data;
     config_params.mesh_assertion_handler = nrf_mesh_assertion_handler;
     config_params.complete_callback = complete_callback;
+    config_params.company_id = TEST_COMPANY_ID;
+    config_params.attention_cb = dummy_attention_cb;
 
     TEST_ASSERT_EQUAL(NRF_ERROR_NULL, nrf_mesh_node_config(NULL));
 
@@ -164,6 +173,8 @@ void test_basic_configuration(void)
     access_init_Expect();
     dsm_init_Expect();
     config_server_init_ExpectAndReturn(NRF_SUCCESS);
+    health_server_init_ExpectAndReturn(NULL, 0, TEST_COMPANY_ID, dummy_attention_cb, NULL, 0, NRF_SUCCESS);
+    health_server_init_IgnoreArg_p_server();
 
     /* Not pre-configured */
     dsm_flash_config_load_ExpectAndReturn(false);
@@ -258,10 +269,11 @@ void test_config_in_flash(void)
 
     nrf_mesh_enable_ExpectAndReturn(NRF_SUCCESS);
 
-    /* Return an address here to indicate that the device is configured: */
     access_init_Expect();
     dsm_init_Expect();
     config_server_init_ExpectAndReturn(NRF_SUCCESS);
+    health_server_init_ExpectAndReturn(NULL, 0, 0, NULL, NULL, 0, NRF_SUCCESS);
+    health_server_init_IgnoreArg_p_server();
 
     dsm_flash_config_load_ExpectAndReturn(true);
     access_flash_config_load_ExpectAndReturn(true);

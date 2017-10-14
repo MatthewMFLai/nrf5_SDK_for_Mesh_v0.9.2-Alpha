@@ -45,7 +45,7 @@ void test_uart_tx(void)
 {
     serial_packet_t * p_packet = NULL;
     packet_buffer_packet_t * p_buf_packet = (packet_buffer_packet_t *) m_buffer;
-    packet_buffer_packet_t * p_buf_packet2 = (packet_buffer_packet_t *) &m_buffer[sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t)];
+    packet_buffer_packet_t * p_buf_packet2 = (packet_buffer_packet_t *) &m_buffer[ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), 4)];
     TEST_NRF_MESH_ASSERT_EXPECT(serial_bearer_tx(p_packet));
 
     p_packet = (serial_packet_t*)test_data;

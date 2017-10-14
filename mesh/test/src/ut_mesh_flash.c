@@ -41,8 +41,19 @@
 #include "mesh_flash.h"
 #include "nrf_flash_mock.h"
 #include "bearer_event.h"
+#include "bearer_handler_mock.h"
 #include "timer_mock.h"
 #include "bl_if.h"
+
+#define START_TIME                      (123)
+#define FLASH_PROCESS_TIME_OVERHEAD		(500)
+#define FLASH_TIME_TO_ERASE_PAGE_US     (20000)
+#define FLASH_TIME_TO_WRITE_ONE_WORD_US (50)
+#define BEARER_ACTION_WRITE_MAX_WORDS   ((BEARER_ACTION_DURATION_MAX_US - FLASH_PROCESS_TIME_OVERHEAD) / FLASH_TIME_TO_WRITE_ONE_WORD_US)
+#define BEARER_ACTION_ERASE_MAX_PAGES   ((BEARER_ACTION_DURATION_MAX_US - FLASH_PROCESS_TIME_OVERHEAD) / FLASH_TIME_TO_ERASE_PAGE_US)
+#define TEST_WRITE_MAX_WORDS            (3 * BEARER_ACTION_WRITE_MAX_WORDS + 1)
+#define TEST_ERASE_MAX_PAGES            (3 * BEARER_ACTION_ERASE_MAX_PAGES + 1)
+#define NEXT_BEARER_ACTION_DELAY        (2 * BEARER_ACTION_DURATION_MAX_US)
 
 typedef struct
 {
@@ -52,9 +63,15 @@ typedef struct
     flash_operation_t expected_op;
     uint16_t expected_callback_token;
 } flash_user_end_expect_t;
+
 static flash_user_end_expect_t m_end_expect_users[2];
 static bearer_event_flag_callback_t m_event_cb;
 static bool m_delayed_flag_event;
+static uint32_t m_bearer_handler_action_enqueue_callback_cnt;
+static uint32_t m_bearer_handler_action_enqueue_callback_expected_cnt;
+static bearer_action_t * mp_bearer_action[MESH_FLASH_USERS];
+static mesh_flash_user_t m_bearer_handler_action_enqueue_callback_expected_user;
+
 
 extern void mesh_flash_reset(void);
 
@@ -68,12 +85,17 @@ nrf_mesh_assertion_handler_t m_assertion_handler = mesh_assert;
 void setUp(void)
 {
     m_event_cb = NULL;
+    m_bearer_handler_action_enqueue_callback_cnt = 0;
+    m_bearer_handler_action_enqueue_callback_expected_cnt = 0;
+    m_bearer_handler_action_enqueue_callback_expected_user = MESH_FLASH_USERS;  /* I.e. invalid value */
     memset(m_end_expect_users, 0, sizeof(m_end_expect_users));
+    memset(mp_bearer_action, 0, sizeof(mp_bearer_action));
     m_end_expect_users[0].user = MESH_FLASH_USER_TEST;
     m_end_expect_users[1].user = MESH_FLASH_USER_DFU;
     m_delayed_flag_event = false;
     nrf_flash_mock_Init();
     timer_mock_Init();
+    bearer_handler_mock_Init();
 }
 
 void tearDown(void)
@@ -83,6 +105,8 @@ void tearDown(void)
     nrf_flash_mock_Destroy();
     timer_mock_Verify();
     timer_mock_Destroy();
+    bearer_handler_mock_Verify();
+    bearer_handler_mock_Destroy();
 }
 
 static void mesh_flash_op_cb(mesh_flash_user_t user, const flash_operation_t * p_op, uint16_t token)
@@ -141,6 +165,44 @@ void bearer_event_flag_set(bearer_event_flag_t flag)
     }
 }
 
+static uint32_t max_write_words_in_remaining_bearer_action(mesh_flash_user_t user, uint32_t start_time, uint32_t current_time)
+{
+    if (current_time - start_time + FLASH_PROCESS_TIME_OVERHEAD > mp_bearer_action[user]->duration_us)
+    {
+        return 0;
+    }
+    else
+    {
+        return (mp_bearer_action[user]->duration_us - current_time + start_time - FLASH_PROCESS_TIME_OVERHEAD) / FLASH_TIME_TO_WRITE_ONE_WORD_US;
+    }
+}
+
+static uint32_t max_erase_pages_in_remaining_bearer_action(mesh_flash_user_t user, uint32_t start_time, uint32_t current_time)
+{
+    if (current_time - start_time + FLASH_PROCESS_TIME_OVERHEAD > mp_bearer_action[user]->duration_us)
+    {
+        return 0;
+    }
+    else
+    {
+        return (mp_bearer_action[user]->duration_us - current_time + start_time - FLASH_PROCESS_TIME_OVERHEAD) / FLASH_TIME_TO_ERASE_PAGE_US;
+    }
+}
+
+static uint32_t bearer_handler_action_enqueue_callback(bearer_action_t* p_action, int cmock_num_calls)
+{
+    m_bearer_handler_action_enqueue_callback_cnt++;
+    mp_bearer_action[m_bearer_handler_action_enqueue_callback_expected_user] = p_action;
+
+    return NRF_SUCCESS;
+}
+
+static void bearer_handler_action_enqueue_expect(mesh_flash_user_t user)
+{
+    m_bearer_handler_action_enqueue_callback_expected_user = user;
+    m_bearer_handler_action_enqueue_callback_expected_cnt++;
+}
+
 /******** Tests ********/
 void test_op_push(void)
 {
@@ -153,52 +215,67 @@ void test_op_push(void)
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
     uint16_t token = 0xFFFF;
+
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, NULL, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.type = FLASH_OP_TYPE_NONE;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.type = FLASH_OP_TYPE_ALL;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = (uint32_t *) 0xADD1ADD1;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.write.p_start_addr = (uint32_t *) 0xADD0ADD0;
     flash_op.params.write.length = 1;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.write.length = 0;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
+    bearer_handler_action_enqueue_ExpectAnyArgsAndReturn(NRF_SUCCESS);
     flash_op.params.write.length = 4;
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0, token);
+
     token = 0xFFFF;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USERS, &flash_op, &token)); /* invalid user */
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.erase.p_start_addr = (uint32_t *) 0xADD1ADD1;
     flash_op.params.erase.length = 4;
     flash_op.type = FLASH_OP_TYPE_ERASE;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.erase.p_start_addr = (uint32_t *) 0xADD1ADD0; /* Only page aligned erases allowed (word aligned shouldn't) */
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.erase.p_start_addr = (uint32_t *) 0xADD1A000;
     flash_op.params.erase.length = 0;
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
+
     flash_op.params.erase.length = 4; // must be page aligned too
     TEST_NRF_MESH_ASSERT_EXPECT(mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(0xFFFF, token);
 
     /* Reset module to flush queue. */
     mesh_flash_reset();
+
     /* test full queue */
     uint16_t expected_token = 0;
     flash_op.params.erase.length = 1024;
+    bearer_handler_action_enqueue_ExpectAnyArgsAndReturn(NRF_SUCCESS);
     while (mesh_flash_op_available_slots(MESH_FLASH_USER_TEST))
     {
         TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
@@ -210,189 +287,225 @@ void test_op_push(void)
 
 void test_execute_write(void)
 {
-    flash_operation_t flash_op;
-    uint32_t dest[1024] __attribute__((aligned(PAGE_SIZE)));
-    for (uint32_t i = 0; i < 1024; ++i)
+    uint32_t dest[TEST_WRITE_MAX_WORDS] __attribute__((aligned(PAGE_SIZE)));
+    for (uint32_t i = 0; i < TEST_WRITE_MAX_WORDS; ++i)
     {
         dest[i] = i + 0xAB000000;
     }
-    uint8_t data[1024] = {0xab, 0xcd, 0xef, 0x01};
-    flash_op.params.write.p_start_addr = dest;
-    flash_op.params.write.p_data = (uint32_t *) data;
-    mesh_flash_init();
-    mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
-
-    const uint32_t lengths[] = {4, 8, 1028};
+    uint8_t data[TEST_WRITE_MAX_WORDS * 4] = {0xab, 0xcd, 0xef, 0x01};
     uint16_t token = 0xFFFF;
     uint16_t expected_token = 0;
 
-    for (uint32_t i = 0; i < 3; ++i)
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
+    flash_op.params.write.p_start_addr = dest;
+    flash_op.params.write.p_data = (uint32_t *) data;
+
+    typedef struct
     {
-        flash_op.params.write.length = lengths[i];
-        flash_op.type = FLASH_OP_TYPE_WRITE;
+        uint32_t length;
+        uint32_t process_time_overhead;
+        uint32_t time_per_word;
+    } test_vector_t;
+
+    const test_vector_t test_vector[] = {
+        { 4,                                       0, 0 },
+        { 8,                                       0, 0 },
+        { BEARER_ACTION_WRITE_MAX_WORDS * 4,       0, 0 },
+        { (BEARER_ACTION_WRITE_MAX_WORDS + 1) * 4, 0, 0 },
+        { TEST_WRITE_MAX_WORDS * 4,                0, 0 },
+
+        { 4,                                       FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_WRITE_ONE_WORD_US / 5 },
+        { 8,                                       FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_WRITE_ONE_WORD_US / 5 },
+        { BEARER_ACTION_WRITE_MAX_WORDS * 4,       FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_WRITE_ONE_WORD_US / 5 },
+        { (BEARER_ACTION_WRITE_MAX_WORDS + 1) * 4, FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_WRITE_ONE_WORD_US / 5 },
+        { TEST_WRITE_MAX_WORDS * 4,                FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_WRITE_ONE_WORD_US / 5 },
+
+        { 4,                                       FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_WRITE_ONE_WORD_US },
+        { 8,                                       FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_WRITE_ONE_WORD_US },
+        { BEARER_ACTION_WRITE_MAX_WORDS * 4,       FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_WRITE_ONE_WORD_US },
+        { (BEARER_ACTION_WRITE_MAX_WORDS + 1) * 4, FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_WRITE_ONE_WORD_US },
+        { TEST_WRITE_MAX_WORDS * 4,                FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_WRITE_ONE_WORD_US }
+    };
+
+    mesh_flash_init();
+    mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
+    /* Run test vectors */
+    for (uint32_t i = 0; i < sizeof(test_vector) / sizeof(test_vector[0]); ++i)
+    {
+        m_bearer_handler_action_enqueue_callback_cnt = 0;
+        m_bearer_handler_action_enqueue_callback_expected_cnt = 0;
+
+        /* Push flash operation */
+        flash_op.params.write.length = test_vector[i].length;
+        bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
         TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
         TEST_ASSERT_EQUAL(expected_token, token);
         expected_token++;
-        mesh_flash_op_execute(0); /* Execute no operations */
-        mesh_flash_op_execute(5); /* Execute no operations */
 
-        if (lengths[i] > 4)
+        uint32_t words_so_far = 0;
+        uint32_t words_remaining = flash_op.params.write.length / 4;
+        uint32_t current_time = START_TIME;
+
+        /* Handle callback(s) from bearer handler for required number of bearer actions */
+        do
         {
-            timer_now_ExpectAndReturn(0);
-            nrf_flash_write_ExpectAndReturn(&dest[0], (uint32_t*) data, flash_op.params.write.length - 4, NRF_SUCCESS);
-            timer_now_ExpectAndReturn(50 * (flash_op.params.write.length - 4) / 4);
-        }
-        mesh_flash_op_execute(50 * (lengths[i]/4) + 499); /* Execute all except last word */
-        timer_mock_Verify();
+            uint32_t start_time = current_time;
 
-        nrf_flash_write_ExpectAndReturn(&dest[lengths[i]/4 - 1], (uint32_t*) &data[lengths[i] - 4], 4, NRF_SUCCESS);
-        memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-        m_end_expect_users[0].expected_cb_count = 1;
-        m_end_expect_users[0].cb_all_count = 0;
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(50 * (lengths[i]/4));
-        mesh_flash_op_execute(50 * (lengths[i]/4) + 501); /* Execute the operation */
-        TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-        TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
-        m_end_expect_users[0].cb_all_count = 0;
-        timer_mock_Verify();
-        nrf_flash_mock_Verify();
+            /* Handle callback(s) from bearer handler for single bearer action */
+            for (uint32_t j = 0; words_remaining > 0; j++)
+            {
+                uint32_t words = max_write_words_in_remaining_bearer_action(MESH_FLASH_USER_TEST, start_time, current_time);
+                if (words > words_remaining)
+                {
+                    words = words_remaining;
+                }
+                if (words == 0)
+                {
+                    break;
+                }
+                nrf_flash_write_ExpectAndReturn(&dest[words_so_far],
+                                                (uint32_t *)data + words_so_far,
+                                                words * 4,
+                                                NRF_SUCCESS);
+                words_so_far += words;
+                words_remaining -= words;
+                current_time += test_vector[i].process_time_overhead + (words * test_vector[i].time_per_word);
+                if (words_remaining > 0)
+                {
+                    timer_now_ExpectAndReturn(current_time);
+                }
+            }
+            bearer_handler_action_end_Expect();
+            if (words_remaining > 0)
+            {
+                bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
+            }
+            m_end_expect_users[0].cb_all_count = 0;
+            m_end_expect_users[0].expected_cb_count = 1;
+            memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
+            mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(start_time, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
+
+            current_time += NEXT_BEARER_ACTION_DELAY;
+
+        } while (words_remaining > 0);
+
+        TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
     }
 
-    /* Flash chunk by chunk */
-    flash_op.params.write.p_start_addr = dest;
-    flash_op.params.write.p_data = (uint32_t *) data;
-    flash_op.params.write.length = 1024;
-    TEST_ASSERT_FALSE(mesh_flash_in_progress());
-    flash_op.type = FLASH_OP_TYPE_WRITE;
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-    TEST_ASSERT_EQUAL(expected_token, token);
-    expected_token++;
-    const uint32_t chunk_size = 64;
-    m_end_expect_users[0].cb_all_count = 0;
-    m_end_expect_users[0].expected_cb_count = 1;
-    memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    TEST_ASSERT_TRUE(mesh_flash_in_progress());
-    for (uint32_t i = 0; i < 1024; i += chunk_size)
-    {
-        TEST_ASSERT_EQUAL(1, m_end_expect_users[0].expected_cb_count);
-        TEST_ASSERT_EQUAL(0, m_end_expect_users[0].cb_all_count);
-        TEST_ASSERT_TRUE(mesh_flash_in_progress());
-        nrf_flash_write_ExpectAndReturn(&dest[i/4], (uint32_t*) &data[i], chunk_size, NRF_SUCCESS);
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(50 * (chunk_size/4));
-        mesh_flash_op_execute(50 * (chunk_size/4) + 501); /* Execute only some of the operation */
-        timer_mock_Verify();
-    }
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
-    timer_mock_Verify();
-
-    /* run again, but spend much less time than expected per chunk, and finish faster. */
-    flash_op.type = FLASH_OP_TYPE_WRITE;
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-    TEST_ASSERT_EQUAL(expected_token, token);
-    m_end_expect_users[0].cb_all_count = 0;
-    m_end_expect_users[0].expected_cb_count = 1;
-    memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    TEST_ASSERT_TRUE(mesh_flash_in_progress());
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].expected_cb_count);
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].cb_all_count);
-    TEST_ASSERT_TRUE(mesh_flash_in_progress());
-#define BYTES_WRITTEN_WITHIN(time) (((time - 500) * 4) / 50)
-    uint32_t remaining_time = 5000;
-    uint32_t bytes = 0;
-    timer_now_ExpectAndReturn(0);
-    for (uint32_t i = 0; i < 1024; i += bytes)
-    {
-        bytes = BYTES_WRITTEN_WITHIN(remaining_time);
-        if (i + bytes > 1024) bytes = 1024 - i;
-        TEST_ASSERT_EQUAL(1, m_end_expect_users[0].expected_cb_count);
-        TEST_ASSERT_EQUAL(0, m_end_expect_users[0].cb_all_count);
-        TEST_ASSERT_TRUE(mesh_flash_in_progress());
-        nrf_flash_write_ExpectAndReturn(&dest[i/4], (uint32_t*) &data[i], bytes, NRF_SUCCESS);
-        timer_now_ExpectAndReturn(0); /* no time elapsed while writing */
-    }
-#undef BYTES_WRITTEN_WITHIN
-    mesh_flash_op_execute(5000);
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 void test_execute_erase(void)
 {
-    flash_operation_t flash_op;
-    uint32_t dest[1024] __attribute__((aligned(PAGE_SIZE)));
-    for (uint32_t i = 0; i < 1024; ++i)
+    uint32_t dest[TEST_ERASE_MAX_PAGES * PAGE_SIZE / 4] __attribute__((aligned(PAGE_SIZE)));
+    for (uint32_t i = 0; i < TEST_ERASE_MAX_PAGES * PAGE_SIZE / 4; ++i)
     {
         dest[i] = i + 0xAB000000;
     }
-    uint8_t data[4] = {0xab, 0xcd, 0xef, 0x01};
-    flash_op.params.write.p_start_addr = dest;
-    flash_op.params.write.p_data = (uint32_t *) data;
+    uint16_t token = 0xFFFF;
+    uint16_t expected_token = 0;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_ERASE;
+    flash_op.params.erase.p_start_addr = dest;
+
+    typedef struct
+    {
+        uint32_t length;
+        uint32_t process_time_overhead;
+        uint32_t time_per_page;
+    } test_vector_t;
+
+    const test_vector_t test_vector[] = {
+        { PAGE_SIZE,                                       0, 0 },
+        { PAGE_SIZE * 2,                                   0, 0 },
+        { BEARER_ACTION_ERASE_MAX_PAGES * PAGE_SIZE,       0, 0 },
+        { (BEARER_ACTION_ERASE_MAX_PAGES + 1) * PAGE_SIZE, 0, 0 },
+        { TEST_ERASE_MAX_PAGES * PAGE_SIZE,                0, 0 },
+
+        { PAGE_SIZE,                                       FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_ERASE_PAGE_US / 5 },
+        { PAGE_SIZE * 2,                                   FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_ERASE_PAGE_US / 5 },
+        { BEARER_ACTION_ERASE_MAX_PAGES * PAGE_SIZE,       FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_ERASE_PAGE_US / 5 },
+        { (BEARER_ACTION_ERASE_MAX_PAGES + 1) * PAGE_SIZE, FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_ERASE_PAGE_US / 5 },
+        { TEST_ERASE_MAX_PAGES * PAGE_SIZE,                FLASH_PROCESS_TIME_OVERHEAD / 2, FLASH_TIME_TO_ERASE_PAGE_US / 5 },
+
+        { PAGE_SIZE,                                       FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_ERASE_PAGE_US },
+        { PAGE_SIZE * 2,                                   FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_ERASE_PAGE_US },
+        { BEARER_ACTION_ERASE_MAX_PAGES * PAGE_SIZE,       FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_ERASE_PAGE_US },
+        { (BEARER_ACTION_ERASE_MAX_PAGES + 1) * PAGE_SIZE, FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_ERASE_PAGE_US },
+        { TEST_ERASE_MAX_PAGES * PAGE_SIZE,                FLASH_PROCESS_TIME_OVERHEAD, FLASH_TIME_TO_ERASE_PAGE_US }
+    };
+
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
 
-    const uint32_t lengths[] = {1024, 2048};
-
-    flash_op.params.erase.p_start_addr = dest;
-    uint16_t token = 0xFFFF;
-
-    for (uint32_t i = 0; i < 2; ++i)
+    /* Run test vectors */
+    for (uint32_t i = 0; i < sizeof(test_vector) / sizeof(test_vector[0]); ++i)
     {
-        flash_op.params.erase.length = lengths[i];
-        flash_op.type = FLASH_OP_TYPE_ERASE;
+        m_bearer_handler_action_enqueue_callback_cnt = 0;
+        m_bearer_handler_action_enqueue_callback_expected_cnt = 0;
+
+        /* Push flash operation */
+        flash_op.params.erase.length = test_vector[i].length;
+        bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
         TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-        mesh_flash_op_execute(0); /* Execute no operations */
-        mesh_flash_op_execute(5); /* Execute no operations */
-        timer_now_ExpectAndReturn(0);
-        //timer_now_ExpectAndReturn(20000 * (lengths[i]/PAGE_SIZE));
-        if (lengths[i] > PAGE_SIZE)
+        TEST_ASSERT_EQUAL(expected_token, token);
+        expected_token++;
+
+        uint32_t pages_so_far = 0;
+        uint32_t pages_remaining = flash_op.params.erase.length / PAGE_SIZE;
+        uint32_t current_time = START_TIME;
+
+        /* Handle callback(s) from bearer handler for required number of bearer actions */
+        do
         {
-            /* Erase all pages but the last */
-            nrf_flash_erase_ExpectAndReturn(&dest[0], lengths[i] - PAGE_SIZE, NRF_SUCCESS);
-            timer_now_ExpectAndReturn(20000 * (lengths[i]/PAGE_SIZE));
-        }
-        mesh_flash_op_execute(20000 * (lengths[i]/PAGE_SIZE) + 500 - 1); /* Execute no operations */
-        timer_mock_Verify();
-        /* erase last flash page */
-        nrf_flash_erase_ExpectAndReturn(&dest[(lengths[i] - PAGE_SIZE) / 4], PAGE_SIZE, NRF_SUCCESS);
-        memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-        m_end_expect_users[0].expected_cb_count = 1;
-        m_end_expect_users[0].cb_all_count = 0;
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(20000 * (lengths[i]/PAGE_SIZE));
-        mesh_flash_op_execute(20000 * (lengths[i]/PAGE_SIZE) + 501); /* Execute the operation */
-        TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-        TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
-        m_end_expect_users[0].cb_all_count = 0;
-        timer_mock_Verify();
+            uint32_t start_time = current_time;
+
+            /* Handle callback(s) from bearer handler for single bearer action */
+            for (uint32_t j = 0; pages_remaining > 0; j++)
+            {
+                uint32_t pages = max_erase_pages_in_remaining_bearer_action(MESH_FLASH_USER_TEST, start_time, current_time);
+                if (pages > pages_remaining)
+                {
+                    pages = pages_remaining;
+                }
+                if (pages == 0)
+                {
+                    break;
+                }
+                nrf_flash_erase_ExpectAndReturn(&dest[pages_so_far * PAGE_SIZE / 4],
+                                                pages * PAGE_SIZE,
+                                                NRF_SUCCESS);
+                pages_so_far += pages;
+                pages_remaining -= pages;
+                current_time += test_vector[i].process_time_overhead + (pages * test_vector[i].time_per_page);
+                if (pages_remaining > 0)
+                {
+                    timer_now_ExpectAndReturn(current_time);
+                }
+            }
+            bearer_handler_action_end_Expect();
+            if (pages_remaining > 0)
+            {
+                bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
+            }
+            m_end_expect_users[0].cb_all_count = 0;
+            m_end_expect_users[0].expected_cb_count = 1;
+            memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
+            mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(start_time, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
+
+            current_time += NEXT_BEARER_ACTION_DELAY;
+
+        } while (pages_remaining > 0);
+
+        TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
     }
 
-    /* Erase chunk by chunk */
-    flash_op.params.erase.p_start_addr = dest;
-    flash_op.params.erase.length = 4 * PAGE_SIZE;
-    TEST_ASSERT_FALSE(mesh_flash_in_progress());
-    flash_op.type = FLASH_OP_TYPE_ERASE;
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-    m_end_expect_users[0].cb_all_count = 0;
-    m_end_expect_users[0].expected_cb_count = 1;
-    memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    TEST_ASSERT_TRUE(mesh_flash_in_progress());
-    for (uint32_t i = 0; i < 4; i++)
-    {
-        TEST_ASSERT_EQUAL(1, m_end_expect_users[0].expected_cb_count);
-        TEST_ASSERT_EQUAL(0, m_end_expect_users[0].cb_all_count);
-        TEST_ASSERT_TRUE(mesh_flash_in_progress());
-        nrf_flash_erase_ExpectAndReturn(&dest[i*PAGE_SIZE/4], PAGE_SIZE, NRF_SUCCESS);
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(20000);
-        mesh_flash_op_execute(20000 + 501); /* Execute only some of the operation */
-        timer_mock_Verify();
-    }
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
-    timer_mock_Verify();
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 void test_available_slots(void)
@@ -401,112 +514,104 @@ void test_available_slots(void)
     uint32_t dest;
     uint8_t data[4];
     uint16_t token = 0xFFFF;
+
+    flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = &dest;
     flash_op.params.write.p_data = (uint32_t *) data;
     flash_op.params.write.length = 4;
+
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
+    /* Check initial state */
     TEST_ASSERT_EQUAL(0, mesh_flash_op_available_slots(MESH_FLASH_USERS)); /* out of bounds, so there are no slots. */
     uint32_t available_slots = mesh_flash_op_available_slots(MESH_FLASH_USER_TEST);
     TEST_ASSERT_NOT_EQUAL(0, available_slots);
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+
+    /* Push flash operation */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
     TEST_ASSERT_EQUAL(available_slots - 1, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST));
     TEST_ASSERT_EQUAL(available_slots - 1, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST)); /* shouldn't alter anything. */
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+
+    /* Push second flash operation */
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-    TEST_ASSERT_EQUAL(available_slots - 2, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST)); /* shouldn't alter anything. */
+    TEST_ASSERT_EQUAL(available_slots - 2, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST));
+
+    /* Execute first flash operation */
     nrf_flash_write_ExpectAndReturn(&dest, (uint32_t*)data, 4, NRF_SUCCESS);
-    nrf_flash_write_ExpectAndReturn(&dest, (uint32_t*)data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    m_end_expect_users[0].expected_cb_count = 2;
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
-    timer_now_ExpectAndReturn(50);
-    mesh_flash_op_execute(10000); /* Execute the two operations */
+    m_end_expect_users[0].expected_cb_count = 1;
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
+    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
+    TEST_ASSERT_EQUAL(available_slots - 1, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST)); /* Back to full */
+
+    /* Execute second flash operation */
+    nrf_flash_write_ExpectAndReturn(&dest, (uint32_t*)data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
+    memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
+    m_end_expect_users[0].expected_cb_count = 1;
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
     TEST_ASSERT_EQUAL(available_slots, mesh_flash_op_available_slots(MESH_FLASH_USER_TEST)); /* Back to full */
+
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 void test_multiple_users(void)
 {
-    uint16_t token = 0xFFFF;
-    flash_operation_t flash_op;
     uint32_t dest[1024] __attribute__((aligned(PAGE_SIZE)));
     for (uint32_t i = 0; i < 1024; ++i)
     {
         dest[i] = i + 0xAB000000;
     }
     uint8_t data[1024] = {0xab, 0xcd, 0xef, 0x01};
+    uint16_t token = 0xFFFF;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = dest;
     flash_op.params.write.p_data = (uint32_t *) data;
     flash_op.params.write.length = 4;
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
     mesh_flash_user_callback_set(MESH_FLASH_USER_DFU, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
 
     memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
     memcpy(&m_end_expect_users[1].expected_op, &flash_op, sizeof(m_end_expect_users[1].expected_op));
 
-    /* push the same event to two users */
+    /* Push the same operation to two users */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_DFU);
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_DFU, &flash_op, &token));
 
-    /* execute first event (the one with the lowest user index) */
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
+    /* Execute first operation (the one with the lowest user index) */
     nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
     m_end_expect_users[1].expected_cb_count = 1;
     m_end_expect_users[1].cb_all_count = 0;
-    mesh_flash_op_execute(551);
+    mp_bearer_action[MESH_FLASH_USER_DFU]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_DFU]->p_args);
     TEST_ASSERT_EQUAL(1, m_end_expect_users[1].cb_all_count);
     TEST_ASSERT_EQUAL(0, m_end_expect_users[1].expected_cb_count);
-    /* execute the second */
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
+
+    /* Execute the second */
     nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
     m_end_expect_users[0].expected_cb_count = 1;
     m_end_expect_users[0].cb_all_count = 0;
-    mesh_flash_op_execute(551);
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
     TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
 
-    /* Schedule one long and one short event. */
-    flash_operation_t long_flash_op;
-    long_flash_op.type = FLASH_OP_TYPE_ERASE;
-    long_flash_op.params.erase.p_start_addr = dest;
-    long_flash_op.params.erase.length = 1024;
-
-    flash_op.params.write.length = 12;
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_DFU, &long_flash_op, &token));
-    memcpy(&m_end_expect_users[1].expected_op, &long_flash_op, sizeof(m_end_expect_users[1].expected_op));
-
-    /* execute with enough time to do a bit of the short one, but not enough to
-     * do the long one. Should wait with the long one for now. */
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
-    nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
-    mesh_flash_op_execute(551);
-    nrf_flash_mock_Verify();
-    /* Now execute with enough time to do the long one, but spend less time
-     * than expected, and fit the rest of the short one afterwards. */
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(100); /* less time than expected */
-    timer_now_ExpectAndReturn(100);
-    nrf_flash_erase_ExpectAndReturn(dest, 1024, NRF_SUCCESS);
-    nrf_flash_write_ExpectAndReturn(&dest[1], (uint32_t *) &data[4], 8, NRF_SUCCESS);
-    m_end_expect_users[0].expected_op.params.write.length = 12;
-    m_end_expect_users[0].expected_cb_count = 1;
-    m_end_expect_users[0].cb_all_count = 0;
-    m_end_expect_users[1].expected_cb_count = 1;
-    m_end_expect_users[1].cb_all_count = 0;
-    mesh_flash_op_execute(20501);
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-    TEST_ASSERT_EQUAL(1, m_end_expect_users[1].cb_all_count);
-    TEST_ASSERT_EQUAL(0, m_end_expect_users[1].expected_cb_count);
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 /** The module keeps track of its queue with indexes. These will
@@ -514,35 +619,45 @@ void test_multiple_users(void)
  */
 void test_queue_index_rollover(void)
 {
-    uint16_t token = 0xFFFF;
-    flash_operation_t flash_op;
     uint32_t dest[1024] __attribute__((aligned(PAGE_SIZE)));
     for (uint32_t i = 0; i < 1024; ++i)
     {
         dest[i] = i + 0xAB000000;
     }
     uint8_t data[1024] = {0xab, 0xcd, 0xef, 0x01};
+    uint16_t token = 0xFFFF;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = dest;
     flash_op.params.write.p_data = (uint32_t *) data;
     flash_op.params.write.length = 4;
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+    
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
     memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    /* rollover happens at 256: */
+
+    /* Keep pushing and processing (rollover happens at 256) */
     for (uint32_t i = 0; i < 270; i++)
     {
-        /* Keep pushing and processing */
+        /* Push operation */
+        bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
         TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(50);
+
+        /* Execute event */
         nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
+        bearer_handler_action_end_Expect();
         m_end_expect_users[0].expected_cb_count = 1;
         m_end_expect_users[0].cb_all_count = 0;
-        mesh_flash_op_execute(551);
+        mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
         TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
         TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
     }
+
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 /** Delay execution of the async flag event, to let the module collect several
@@ -551,34 +666,43 @@ void test_queue_index_rollover(void)
  */
 void test_multifire(void)
 {
-    uint16_t token = 0xFFFF;
-    m_delayed_flag_event = true;
-    flash_operation_t flash_op;
     uint32_t dest[1024] __attribute__((aligned(PAGE_SIZE)));
     for (uint32_t i = 0; i < 1024; ++i)
     {
         dest[i] = i + 0xAB000000;
     }
     uint8_t data[1024] = {0xab, 0xcd, 0xef, 0x01};
+    uint16_t token = 0xFFFF;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = dest;
     flash_op.params.write.p_data = (uint32_t *) data;
     flash_op.params.write.length = 4;
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+
+    m_delayed_flag_event = true;
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
     memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
+
     for (uint32_t i = 0; i < 4; i++)
     {
+        /* Push operation */
+        bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
         TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
-        timer_now_ExpectAndReturn(0);
-        timer_now_ExpectAndReturn(50);
+
+        /* Execute operation */
         nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
-        mesh_flash_op_execute(551);
+        bearer_handler_action_end_Expect();
+        mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
     }
 
-    /* keep one operation in the pipeline, but fire the callback. The reports
+    /* Keep one operation in the pipeline, but fire the callback. The reports
      * on individual events should come, but not the final ALL events callback.
      * */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
 
     m_end_expect_users[0].expected_cb_count = 4;
@@ -586,43 +710,102 @@ void test_multifire(void)
     m_event_cb();
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].cb_all_count); /* still one event in the pipeline. */
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
+
+    /* Execute last operation */
     nrf_flash_write_ExpectAndReturn(dest, (uint32_t *) data, 4, NRF_SUCCESS);
-    mesh_flash_op_execute(551);
+    bearer_handler_action_end_Expect();
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
+
+    /* Execute callback */
     m_end_expect_users[0].expected_cb_count = 1;
     m_end_expect_users[0].cb_all_count = 0;
     m_event_cb();
     TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count); /* All events fired. */
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
+
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }
 
 void test_suspend(void)
 {
-    uint16_t token = 0xFFFF;
-    flash_operation_t flash_op;
     uint32_t dest;
     uint8_t data[4];
+    uint16_t token = 0xFFFF;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
     flash_op.params.write.p_start_addr = &dest;
     flash_op.params.write.p_data = (uint32_t *) data;
     flash_op.params.write.length = 4;
+
     mesh_flash_init();
     mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
-    uint32_t available_slots = mesh_flash_op_available_slots(MESH_FLASH_USER_TEST);
-    TEST_ASSERT_NOT_EQUAL(0, available_slots);
-    flash_op.type = FLASH_OP_TYPE_WRITE;
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
+    /* Push operation */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
+
+    /* Suspend, then execute the operation. Don't expect any flash operation to happen */
     mesh_flash_set_suspended(true);
-    mesh_flash_op_execute(10000); /* Execute the operation, don't expect anything to happen */
+    bearer_handler_action_end_Expect();
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
     nrf_flash_mock_Verify();
+
+    /* Cancel suspension */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
     mesh_flash_set_suspended(false);
+
+    /* Execute operation */
     nrf_flash_write_ExpectAndReturn(&dest, (uint32_t*)data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
     m_end_expect_users[0].expected_cb_count = 1;
     m_end_expect_users[0].cb_all_count = 0;
     memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
-    timer_now_ExpectAndReturn(0);
-    timer_now_ExpectAndReturn(50);
-    mesh_flash_op_execute(10000); /* Execute the operation */
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
     TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
     TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
+
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
+}
+
+void test_in_progress(void)
+{
+    uint32_t dest;
+    uint8_t data[4];
+    uint16_t token = 0xFFFF;
+
+    flash_operation_t flash_op;
+    flash_op.type = FLASH_OP_TYPE_WRITE;
+    flash_op.params.write.p_start_addr = &dest;
+    flash_op.params.write.p_data = (uint32_t *) data;
+    flash_op.params.write.length = 4;
+
+    mesh_flash_init();
+    mesh_flash_user_callback_set(MESH_FLASH_USER_TEST, mesh_flash_op_cb);
+    bearer_handler_action_enqueue_StubWithCallback(bearer_handler_action_enqueue_callback);
+
+    /* Check initial in_progress state */
+    TEST_ASSERT_EQUAL(false, mesh_flash_in_progress());
+
+    /* Push operation */
+    bearer_handler_action_enqueue_expect(MESH_FLASH_USER_TEST);
+    TEST_ASSERT_EQUAL_HEX32(NRF_SUCCESS, mesh_flash_op_push(MESH_FLASH_USER_TEST, &flash_op, &token));
+    TEST_ASSERT_EQUAL(true, mesh_flash_in_progress());
+    
+    /* Execute operation */
+    nrf_flash_write_ExpectAndReturn(&dest, (uint32_t*)data, 4, NRF_SUCCESS);
+    bearer_handler_action_end_Expect();
+    m_end_expect_users[0].expected_cb_count = 1;
+    m_end_expect_users[0].cb_all_count = 0;
+    memcpy(&m_end_expect_users[0].expected_op, &flash_op, sizeof(m_end_expect_users[0].expected_op));
+    mp_bearer_action[MESH_FLASH_USER_TEST]->start_cb(0, mp_bearer_action[MESH_FLASH_USER_TEST]->p_args);
+    TEST_ASSERT_EQUAL(1, m_end_expect_users[0].cb_all_count);
+    TEST_ASSERT_EQUAL(0, m_end_expect_users[0].expected_cb_count);
+    TEST_ASSERT_EQUAL(false, mesh_flash_in_progress());
+    
+    TEST_ASSERT_EQUAL_UINT32(m_bearer_handler_action_enqueue_callback_expected_cnt, m_bearer_handler_action_enqueue_callback_cnt);
+    bearer_handler_action_enqueue_StubWithCallback(NULL);
 }

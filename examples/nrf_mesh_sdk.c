@@ -38,12 +38,20 @@
 #include "nrf_mesh_sdk.h"
 #include "nrf_mesh_assert.h"
 #include "toolchain.h"
+#include "nrf.h"
+#include "log.h"
+
+#include "boards.h"
 
 #if defined(NRF51) && defined(NRF_MESH_STACK_DEPTH)
 #include "stack_depth.h"
 #endif
 
+#if SD_BLE_API_VERSION >= 4
+static uint8_t m_ble_evt_buffer[sizeof(ble_evt_t) + BLE_GATT_ATT_MTU_DEFAULT];
+#else
 static uint8_t m_ble_evt_buffer[sizeof(ble_evt_t) + GATT_MTU_SIZE_DEFAULT];
+#endif
 
 /********** Fatal Error Reporting **********/
 
@@ -67,13 +75,13 @@ void app_error_handler(uint32_t error_code, uint32_t line_number, const uint8_t 
 
 void mesh_assert_handler(uint32_t pc)
 {
-    __LOG(LOG_SRC_APP, LOG_LEVEL_ERROR, "MESH ASSERT at 0x%.08lx\n", pc);
+    __LOG(LOG_SRC_APP, LOG_LEVEL_ASSERT, "MESH ASSERT at 0x%.08lx\n", pc);
     sleep_forever(pc);
 }
 
 void HardFault_Handler(void)
 {
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "HARDFAULT...\n");
+    __LOG(LOG_SRC_APP, LOG_LEVEL_ASSERT, "HARDFAULT...\n");
     sleep_forever(1);
 }
 
@@ -96,6 +104,7 @@ void SD_EVT_IRQHandler(void)
 }
 
 #if defined(S130) || defined(S132) || defined(S140)
+#include "nrf_nvic.h"
 nrf_nvic_state_t nrf_nvic_state;
 
 void softdevice_assert_handler(uint32_t id, uint32_t pc, uint32_t info)
@@ -104,7 +113,11 @@ void softdevice_assert_handler(uint32_t id, uint32_t pc, uint32_t info)
     sleep_forever(pc);
 }
 
+#if SD_BLE_API_VERSION >= 4
+uint32_t mesh_softdevice_enable(void)
+#else
 uint32_t mesh_softdevice_enable(ble_enable_params_t * p_ble_enable_params)
+#endif
 {
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing SoftDevice...\n");
 #if defined ( __CC_ARM )
@@ -117,7 +130,11 @@ uint32_t mesh_softdevice_enable(ble_enable_params_t * p_ble_enable_params)
     uint32_t app_ram_base = ram_start;
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Ram base: 0x%x\n", ram_start);
 
+#if SD_BLE_API_VERSION >= 4
+    uint32_t error_code = sd_ble_enable(&app_ram_base);
+#else
     uint32_t error_code = sd_ble_enable(p_ble_enable_params, &app_ram_base);
+#endif
     if (app_ram_base != ram_start)
     {
         __LOG(LOG_SRC_APP, LOG_LEVEL_WARN, "sd_ble_enable: app_ram_base should be adjusted to 0x%0x\n", app_ram_base);
@@ -130,17 +147,20 @@ uint32_t mesh_softdevice_setup(nrf_clock_lf_cfg_t lfc_cfg)
     ERROR_CHECK(sd_softdevice_enable(&lfc_cfg, softdevice_assert_handler));
     ERROR_CHECK(sd_nvic_EnableIRQ(SD_EVT_IRQn));
 
+#if SD_BLE_API_VERSION >= 4
+    ERROR_CHECK(mesh_softdevice_enable());
+#else
     ble_enable_params_t ble_enable_params = {{0}};
     ERROR_CHECK(mesh_softdevice_enable(&ble_enable_params));
+#endif
 
     return NRF_SUCCESS;
 }
 
 #elif defined(S110)
-
 void softdevice_assert_handler(uint32_t pc, uint16_t line_number, const uint8_t * p_filename)
 {
-    __LOG(LOG_SRC_APP, LOG_LEVEL_ERROR, "SD ASSERT: %s:%hu at 0x%.08lx\n", p_filename, line_number, pc);
+    __LOG(LOG_SRC_APP, LOG_LEVEL_ASSERT, "SD ASSERT: %s:%hu at 0x%.08lx\n", p_filename, line_number, pc);
     sleep_forever(pc);
 }
 
@@ -155,3 +175,26 @@ uint32_t mesh_softdevice_setup(nrf_clock_lfclksrc_t lfccfg)
     return NRF_SUCCESS;
 }
 #endif
+
+void mesh_core_setup(void)
+{
+    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing softdevice\n");
+#if  SD_BLE_API_VERSION >= 5
+    nrf_clock_lf_cfg_t lfc_cfg = {NRF_CLOCK_LF_SRC_XTAL, 0, 0, NRF_CLOCK_LF_ACCURACY_20_PPM};
+#elif SD_BLE_API_VERSION >= 2
+    nrf_clock_lf_cfg_t lfc_cfg = {NRF_CLOCK_LF_SRC_XTAL, 0, 0, NRF_CLOCK_LF_XTAL_ACCURACY_20_PPM};
+#elif defined(S110)
+    nrf_clock_lfclksrc_t lfc_cfg = NRF_CLOCK_LFCLKSRC_XTAL_20_PPM;
+#endif
+    mesh_softdevice_setup(lfc_cfg);
+
+    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing mesh stack\n");
+    nrf_mesh_init_params_t mesh_init_params = {
+        .lfclksrc = lfc_cfg,
+        .assertion_handler = mesh_assert_handler,
+    };
+    ERROR_CHECK(nrf_mesh_init(&mesh_init_params));
+
+    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling mesh stack\n");
+    ERROR_CHECK(nrf_mesh_enable());
+}

@@ -52,14 +52,23 @@
 #include "nrf_mesh_dfu.h"
 #include "nrf_mesh_serial.h"
 
+#ifndef NRF_MESH_SERIAL_ENABLE
+#define NRF_MESH_SERIAL_ENABLE 1
+#endif
+
 #if defined(NRF51)
 #define FLASH_PAGE_SIZE                 ( 0x400)
 #define FLASH_PAGE_MASK             (0xFFFFFC00)
-#elif defined(NRF52)
+#elif defined(NRF52_SERIES)
 #define FLASH_PAGE_SIZE                 (0x1000)
 #define FLASH_PAGE_MASK             (0xFFFFF000)
 #endif
-#if defined ( __CC_ARM )
+#if defined(_lint)
+const volatile uint32_t * rom_base   = NULL;
+const volatile uint32_t * rom_length = NULL;
+uint32_t rom_end;
+uint32_t bank_addr;
+#elif defined ( __CC_ARM )
     extern uint32_t Image$$ER_IROM1$$Base;
     extern uint32_t Image$$ER_IROM1$$Length;
     const volatile uint32_t * rom_base   = &Image$$ER_IROM1$$Base;
@@ -109,15 +118,15 @@ static void mesh_evt_handler(nrf_mesh_evt_t* p_evt)
         case NRF_MESH_EVT_DFU_FIRMWARE_OUTDATED_NO_AUTH:
             if (fw_updated_event_is_for_me(&p_evt->params.dfu))
             {
-                nrf_mesh_dfu_request(p_evt->params.dfu.fw_outdated.transfer.dfu_type,
-                        &p_evt->params.dfu.fw_outdated.transfer.id,
-                        (uint32_t*) bank_addr);
+                ERROR_CHECK(nrf_mesh_dfu_request(p_evt->params.dfu.fw_outdated.transfer.dfu_type,
+                                                 &p_evt->params.dfu.fw_outdated.transfer.id,
+                                                 (uint32_t*) bank_addr));
                 NRF_GPIO->OUTSET = LEDS_MASK; /* Turn off all LEDs */
             }
             else
             {
-                nrf_mesh_dfu_relay(p_evt->params.dfu.fw_outdated.transfer.dfu_type,
-                                   &p_evt->params.dfu.fw_outdated.transfer.id);
+                ERROR_CHECK(nrf_mesh_dfu_relay(p_evt->params.dfu.fw_outdated.transfer.dfu_type,
+                                               &p_evt->params.dfu.fw_outdated.transfer.id));
             }
             break;
         case NRF_MESH_EVT_DFU_START:
@@ -129,7 +138,7 @@ static void mesh_evt_handler(nrf_mesh_evt_t* p_evt)
             break;
         case NRF_MESH_EVT_DFU_BANK_AVAILABLE:
             NRF_GPIO->OUTSET = LEDS_MASK; /* Turn off all LEDs */
-            nrf_mesh_dfu_bank_flash(p_evt->params.dfu.bank.transfer.dfu_type);
+            ERROR_CHECK(nrf_mesh_dfu_bank_flash(p_evt->params.dfu.bank.transfer.dfu_type));
             break;
 
         default:
@@ -164,30 +173,14 @@ int main(void)
     __LOG(LOG_SRC_APP, LOG_LEVEL_DBG2, "rom_length %X\n", rom_length);
     __LOG(LOG_SRC_APP, LOG_LEVEL_DBG2, "bank_addr   %X\n", bank_addr);
 
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing softdevice...\n");
-#if defined(S130) || defined(S132)
-    nrf_clock_lf_cfg_t lfc_cfg = {NRF_CLOCK_LF_SRC_XTAL, 0, 0, NRF_CLOCK_LF_XTAL_ACCURACY_20_PPM};
-#elif defined(S110)
-    nrf_clock_lfclksrc_t lfc_cfg = NRF_CLOCK_LFCLKSRC_XTAL_20_PPM;
-#endif
-    mesh_softdevice_setup(lfc_cfg);
+    mesh_core_setup();
 
-
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Initializing mesh stack...\n");
-    nrf_mesh_init_params_t mesh_init_params = {
-        .lfclksrc = lfc_cfg,
-        .assertion_handler = mesh_assert_handler
-    };
-    ERROR_CHECK(nrf_mesh_init(&mesh_init_params));
-#if  NRF_MESH_SERIAL_ENABLE
+#if NRF_MESH_SERIAL_ENABLE
     ERROR_CHECK(nrf_mesh_serial_init(NULL));
 #endif
     m_evt_handler.evt_cb = mesh_evt_handler;
     m_evt_handler.p_next = NULL;
     nrf_mesh_evt_handler_add(&m_evt_handler);
-
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling mesh stack...\n");
-    ERROR_CHECK(nrf_mesh_enable());
 
 #if NRF_MESH_SERIAL_ENABLE
     __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "Enabling serial interface...\n");
@@ -199,6 +192,6 @@ int main(void)
 
     while (true)
     {
-        nrf_mesh_process();
+        (void)nrf_mesh_process();
     }
 }

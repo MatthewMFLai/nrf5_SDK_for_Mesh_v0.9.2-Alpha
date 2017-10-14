@@ -37,6 +37,7 @@
 
 #include <unity.h>
 #include <cmock.h>
+#include <stdio.h>
 
 #include "flash_manager.h"
 #include "flash_manager_internal.h"
@@ -217,10 +218,22 @@ void test_manager_add(void)
 
     /* build a bunch of areas at the same time */
     g_delayed_execution = true;
-    flash_manager_t managers[6];
-    static flash_manager_page_t areas[6][2] __attribute__((aligned(PAGE_SIZE)));
+
+    /* To avoid looking into the internal definitions in flash_manager.c we calculate the size of
+     * each entry based on the action_t struct, remembering to add the overhead from
+     * packet_buffer_packet_t for each of the entries.
+     */
+#define AREA_COUNT 2
+#define FMAN_COUNT ((FLASH_MANAGER_POOL_SIZE + sizeof(packet_buffer_packet_t)) / \
+                    ((sizeof(flash_manager_metadata_t)                  \
+                      + sizeof(flash_manager_t*) + sizeof(uint8_t)      \
+                      + sizeof(packet_buffer_packet_t))*AREA_COUNT))
+
+    printf("\n\n FMAN_COUNT %u \n\n", FMAN_COUNT);
+    flash_manager_t managers[FMAN_COUNT];
+    static flash_manager_page_t areas[FMAN_COUNT][AREA_COUNT] __attribute__((aligned(PAGE_SIZE)));
     memset(areas, 0xFF, sizeof(areas));
-    for (uint32_t i = 0; i < 5; i++)
+    for (uint32_t i = 0; i < FMAN_COUNT-1; i++)
     {
         config.p_area = &areas[i][0];
         config.page_count = 2;
@@ -230,7 +243,7 @@ void test_manager_add(void)
     g_delayed_execution = false;
     g_process_cb();
     flash_execute();
-    for (uint32_t i = 0; i < 5; i++)
+    for (uint32_t i = 0; i < FMAN_COUNT-1; i++)
     {
         for (uint32_t j = 0; j < 2; j++)
         {
@@ -241,15 +254,15 @@ void test_manager_add(void)
     /* Add too many areas to fit */
     g_delayed_execution = true;
     memset(areas, 0xFF, sizeof(areas));
-    for (uint32_t i = 0; i < 5; i++)
+    for (uint32_t i = 0; i < FMAN_COUNT-1; i++)
     {
         config.p_area = &areas[i][0];
         config.page_count = 2;
         TEST_ASSERT_EQUAL(NRF_SUCCESS, flash_manager_add(&managers[i], &config));
     }
-    config.p_area = &areas[5][0];
+    config.p_area = &areas[FMAN_COUNT-1][0];
     config.page_count = 2;
-    TEST_ASSERT_EQUAL(NRF_ERROR_NO_MEM, flash_manager_add(&managers[5], &config));
+    TEST_ASSERT_EQUAL(NRF_ERROR_NO_MEM, flash_manager_add(&managers[FMAN_COUNT-1], &config));
     /* execute the flashing */
     g_delayed_execution = false;
     g_process_cb();

@@ -327,7 +327,7 @@ void test_tx_multi(void)
 #undef NETWORKS
 }
 
-void test_pkt_in(void)
+void test_packet_in(void)
 {
     setup_module();
 
@@ -352,7 +352,7 @@ void test_pkt_in(void)
         enc_aes_cmac_IgnoreArg_p_result();
         enc_aes_cmac_ReturnMemThruPtr_p_result(sample_data.auth, 16);
         net_state_beacon_received_Expect(sample_data.iv_index, sample_data.iv_update, sample_data.key_refresh);
-        net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+        net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
         TEST_ASSERT_EQUAL(1, sample_data.info.p_tx_info->rx_count);
 
         /* Try again, should bump the tx count */
@@ -361,7 +361,7 @@ void test_pkt_in(void)
         enc_aes_cmac_IgnoreArg_p_result();
         enc_aes_cmac_ReturnMemThruPtr_p_result(sample_data.auth, 16);
         net_state_beacon_received_Expect(sample_data.iv_index, sample_data.iv_update, sample_data.key_refresh);
-        net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+        net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
         TEST_ASSERT_EQUAL(2, sample_data.info.p_tx_info->rx_count);
 
         /* Try again without permitting IV update. Shouldn't forward to net state module, but should count the RX */
@@ -370,7 +370,7 @@ void test_pkt_in(void)
         enc_aes_cmac_ExpectWithArray(sample_data.info.secmat.key, NRF_MESH_KEY_SIZE, sample_data.beacon, 13, 13, NULL, 0);
         enc_aes_cmac_IgnoreArg_p_result();
         enc_aes_cmac_ReturnMemThruPtr_p_result(sample_data.auth, 16);
-        net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+        net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
         TEST_ASSERT_EQUAL(3, sample_data.info.p_tx_info->rx_count);
 
 
@@ -382,7 +382,7 @@ void test_pkt_in(void)
         enc_aes_cmac_IgnoreArg_p_result();
         enc_aes_cmac_ReturnMemThruPtr_p_result(sample_data.auth, 16);
         net_state_beacon_received_Expect(sample_data.iv_index, sample_data.iv_update, sample_data.key_refresh);
-        net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+        net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
         TEST_ASSERT_EQUAL(0xFFFF, sample_data.info.p_tx_info->rx_count);
 
         /* Invalid auth, shouldn't handle the beacon: */
@@ -393,7 +393,7 @@ void test_pkt_in(void)
         enc_aes_cmac_ExpectWithArray(sample_data.info.secmat.key, NRF_MESH_KEY_SIZE, sample_data.beacon, 13, 13, NULL, 0);
         enc_aes_cmac_IgnoreArg_p_result();
         enc_aes_cmac_ReturnMemThruPtr_p_result(dummy_auth, 16);
-        net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+        net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
         TEST_ASSERT_EQUAL(0, sample_data.info.p_tx_info->rx_count);
     }
 #undef SAMPLE_COUNT
@@ -446,7 +446,7 @@ void test_pkt_in_multi(void)
     }
     net_state_beacon_received_Expect(sample_data.iv_index, sample_data.iv_update, sample_data.key_refresh);
     net_state_beacon_received_Expect(sample_data.iv_index, sample_data.iv_update, sample_data.key_refresh);
-    net_beacon_pkt_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
+    net_beacon_packet_in(sample_data.beacon, sizeof(sample_data.beacon), NULL);
     TEST_ASSERT_EQUAL(1, tx_infos[0].rx_count);
     TEST_ASSERT_EQUAL(0, tx_infos[1].rx_count); /* Had invalid auth, didn't get a match */
     TEST_ASSERT_EQUAL(1, tx_infos[2].rx_count);

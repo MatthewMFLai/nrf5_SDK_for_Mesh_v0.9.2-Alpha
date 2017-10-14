@@ -274,9 +274,9 @@ void Cipher()
     }
 }
 
-void aes_encrypt(uint8_t const * const p_key, uint8_t const * const p_in, uint8_t *p_out)
+void aes_encrypt(const uint8_t * const p_key, const uint8_t * const p_in, uint8_t *p_out)
 {
-  int32_t i;
+  /* int32_t i; */
   uint32_t nkey = 128;
 
   Nk = nkey / 32;

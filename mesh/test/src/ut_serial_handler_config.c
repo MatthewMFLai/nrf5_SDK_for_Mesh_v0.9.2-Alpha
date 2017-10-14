@@ -42,7 +42,7 @@
 
 #include "serial_status.h"
 
-#include "bearer_adv_mock.h"
+#include "advertiser_mock.h"
 #include "nrf_mesh_configure_mock.h"
 #include "serial_mock.h"
 
@@ -77,7 +77,7 @@ static void assertion_handler(uint32_t pc)
 
 void setUp(void)
 {
-    bearer_adv_mock_Init();
+    advertiser_mock_Init();
     nrf_mesh_configure_mock_Init();
     serial_mock_Init();
 
@@ -86,8 +86,8 @@ void setUp(void)
 
 void tearDown(void)
 {
-    bearer_adv_mock_Verify();
-    bearer_adv_mock_Destroy();
+    advertiser_mock_Verify();
+    advertiser_mock_Destroy();
     nrf_mesh_configure_mock_Verify();
     nrf_mesh_configure_mock_Destroy();
     serial_mock_Verify();
@@ -109,9 +109,9 @@ void test_config_rx(void)
         addr.addr[i] = i;
     }
     addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
-    bearer_adv_addr_get_Expect(NULL);
-    bearer_adv_addr_get_IgnoreArg_p_addr();
-    bearer_adv_addr_get_ReturnMemThruPtr_p_addr(&addr, sizeof(addr));
+    advertiser_address_default_get_Expect(NULL);
+    advertiser_address_default_get_IgnoreArg_p_addr();
+    advertiser_address_default_get_ReturnMemThruPtr_p_addr(&addr, sizeof(addr));
     serial_evt_cmd_rsp_data_adv_addr_t adv_addr_rsp;
     adv_addr_rsp.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
     memcpy(adv_addr_rsp.addr, addr.addr, BLE_GAP_ADDR_LEN);

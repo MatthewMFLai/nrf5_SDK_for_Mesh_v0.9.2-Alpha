@@ -1,20 +1,20 @@
 # Copyright (c) 2010 - 2017, Nordic Semiconductor ASA
 # All rights reserved.
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-# 
+#
 # 1. Redistributions of source code must retain the above copyright notice, this
 #    list of conditions and the following disclaimer.
-# 
+#
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
-# 
+#
 # 3. Neither the name of Nordic Semiconductor ASA nor the names of its
 #    contributors may be used to endorse or promote products derived from this
 #    software without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY, AND FITNESS FOR A PARTICULAR PURPOSE
@@ -71,31 +71,24 @@ HEADER_START="""/* Copyright (c) 2010 - 2017, Nordic Semiconductor ASA
 #ifndef PACKET_MESH_H__
 #define PACKET_MESH_H__
 
-/**
- * Generic mesh/advertising packet.
- */
-typedef struct __attribute((packed))
-{
-    uint8_t length;  /**< The length of the ad_type + pdu.*/
-    uint8_t ad_type; /**< Advertising type. */
-    uint8_t pdu[];   /**< Mesh PDU. */
-} packet_mesh_t;
+#include <stdint.h>
+
 """
 HEADER_END="#endif"
 
 class Field(object):
     """Packet field object."""
-    def __init__(self, name, module, width, doc, visible, bit_offset=0):
+    def __init__(self, name, owner, width, doc, visible, bit_offset=0):
         """Initializes a field for a packet.
 
         name    -- the (short) name of the field
-        module  -- the (short) module that owns the field
+        owner   -- the owner of the field
         width   -- the width (in bits) of the field
         doc     -- a docstring that makes sense in the following sentence: 'returns the #doc#'
         visible -- True if this field should generate getter/setter functions.
         """
         self.name    = name
-        self.module  = module
+        self.owner  = owner
         self.width   = width
         self.doc     = doc
         self.visible = visible
@@ -158,20 +151,20 @@ class Field(object):
         defs = ""
         if len(self._masks) == 1 and self._masks[0] != 0xFF:
             defs  = "#define PACKET_MESH_%s_MASK     (0x%02X)" % \
-                    (self.name.upper(), self._masks[0])
+                    (self.get_full_name().upper(), self._masks[0])
 
-            defs += "    /**< Mask for %s field. */\n" % (self.name.lower())
+            defs += "    /**< Mask for %s field. */\n" % (self.get_full_name().lower())
             defs += "#define PACKET_MESH_%s_MASK_INV (0x%02X)" % \
-                    (self.name.upper(), self._masks_inv[0])
-            defs += "    /**< Inverse mask for %s field. */\n" % (self.name.lower())
+                    (self.get_full_name().upper(), self._masks_inv[0])
+            defs += "    /**< Inverse mask for %s field. */\n" % (self.get_full_name().lower())
         else:
             defs  = ["#define PACKET_MESH_%s%u_MASK     (0x%02X)" %   \
-                     (self.name.upper(), i, self._masks[i])         + \
-                     "    /**< Mask for %s field (%u). */" % (self.name.lower(), i) \
+                     (self.get_full_name().upper(), i, self._masks[i])         + \
+                     "    /**< Mask for %s field (%u). */" % (self.get_full_name().lower(), i) \
                      for i in range(len(self._masks)) if self._masks[i] != 0xFF]
             defs += ["#define PACKET_MESH_%s%u_MASK_INV (0x%02X)" % \
-                     (self.name.upper(), i, self._masks_inv[i])   + \
-                     "    /**< Inverse mask for %s field (%u). */" % (self.name.lower(), i) \
+                     (self.get_full_name().upper(), i, self._masks_inv[i])   + \
+                     "    /**< Inverse mask for %s field (%u). */" % (self.get_full_name().lower(), i) \
                      for i in range(len(self._masks)) if self._masks[i] != 0xFF]
             defs = "\n".join(defs) + "\n"
         if defs.strip() == "":
@@ -185,14 +178,14 @@ class Field(object):
         if len(self._offsets) == 1:
             ws = (8 - len(str(self._offsets[0]))) * " "
             defs = "#define PACKET_MESH_%s_OFFSET   (%u)" % \
-                   (self.name.upper(), self._offsets[0])
-            defs  += ws + "/**< Offset to the %s field.*/\n" % (self.name.lower())
+                   (self.get_full_name().upper(), self._offsets[0])
+            defs  += ws + "/**< Offset to the %s field.*/\n" % (self.get_full_name().lower())
         else:
             defs = []
             for i in range(len(self._offsets)):
                 ws = (8 - len(str(self._offsets[i]))) * " "
-                defs += ["#define PACKET_MESH_%s%u_OFFSET   (%u)"   % (self.name.upper(), i, self._offsets[i]) + \
-                         ws + "/**< Offset to the %s field (%u).*/" % (self.name.lower(), i)]
+                defs += ["#define PACKET_MESH_%s%u_OFFSET   (%u)"   % (self.get_full_name().upper(), i, self._offsets[i]) + \
+                         ws + "/**< Offset to the %s field (%u).*/" % (self.get_full_name().lower(), i)]
             defs  = "\n".join(defs) + "\n"
         return defs
 
@@ -208,8 +201,8 @@ class Field(object):
  * @returns Value of the %s.
  */""" % (self.doc, self.doc)]
 
-        fun += ["static inline %s packet_mesh_%s_%s_get(const packet_mesh_t * p_pkt)" \
-                % (ctype, self.module.lower(), self.name.lower()),
+        fun += ["static inline %s packet_mesh_%s_get(const %s * p_pkt)" \
+                % (ctype, self.get_full_name(), self.owner._packet_type),
                 "{"]
 
         if self.width == 1:
@@ -251,15 +244,18 @@ class Field(object):
         fun.append("}")
         return "\n".join(fun) + "\n"
 
+    def get_full_name(self):
+        return self.owner.get_full_name() + '_' + self.name
+
     def get_setter_function(self):
         """Gets the setter function for this field."""
         NUM_SPACES = 4
         ws = " " * NUM_SPACES
         ctype = self.get_ctype((self.width - 1) // 8)
         if len(self._masks) > 1:
-            names = [self.name.upper() + str(i) for i in range(len(self._masks))]
+            names = [self.get_full_name().upper() + str(i) for i in range(len(self._masks))]
         else:
-            names = [self.name.upper()]
+            names = [self.get_full_name().upper()]
 
 
         fun = ["""/**
@@ -268,8 +264,8 @@ class Field(object):
  * @param[in]     val   Value of the %s.
  */""" % (self.doc, self.doc)]
 
-        fun += ["static inline void packet_mesh_%s_%s_set(packet_mesh_t * p_pkt, %s val)" \
-                % (self.module.lower(), self.name.lower(), ctype),
+        fun += ["static inline void packet_mesh_%s_set(%s * p_pkt, %s val)" \
+                % (self.get_full_name(), self.owner._packet_type, ctype),
                 "{"]
 
         for i in range(len(self._masks)-1):
@@ -332,9 +328,9 @@ class Field(object):
         if i == -1:
             i = len(self._masks)-1
         if len(self._masks) > 1:
-            name = self.name.upper() + str(i)
+            name = self.get_full_name().upper() + str(i)
         else:
-            name = self.name.upper()
+            name = self.get_full_name().upper()
         if self._masks[i] == 0xFF:
             return "p_pkt->pdu[PACKET_MESH_%s_OFFSET]" % (name)
         else:
@@ -362,17 +358,23 @@ class Field(object):
 
 
 class PacketFMT(object):
-    def __init__(self, name, type_, fields):
-        self._name = name
+    def __init__(self, type_, **args):
+        self._name = args['name']
         self._type = type_
         self._total_offset = 0
+        if 'module' in args:
+            self._module = args['module']
+        else:
+            self._module = None
+        self._max_length = args['max_length']
+        self._packet_type = args['packet_type']
         self._fields = []
-        if type(fields) is list:
-            for elem in fields:
+        if type(args['fields']) is list:
+            for elem in args['fields']:
                 if type(elem) is dict:
-                    f = Field(**elem, bit_offset=self._total_offset)
-                    if f not in self._fields:
-                        self._fields += [f]
+                    f = Field(**elem, owner=self, bit_offset=self._total_offset)
+                    #if f not in self._fields:
+                    self._fields += [f]
                     self._total_offset += elem["width"]
                 else:
                     print(elem)
@@ -403,9 +405,15 @@ class PacketFMT(object):
     def get_fields(self):
         return list(self._fields)
 
+    def get_full_name(self, divider='_'):
+        components = [self._name]
+        if self._module:
+            components = [self._module] + components
+        return divider.join(components).replace('_', divider)
+
 def as_packet_fmt(dct):
     if "__packet__" in dct:
-        return PacketFMT(dct["name"], dct["type"], dct["fields"])
+        return PacketFMT(dct["type"], **dct)
     else:
         return dct
 
@@ -417,45 +425,56 @@ def json_reads():
 
     return jdata
 
-if __name__ == "__main__":
-    fields = json_reads()
-    pdu_defines = ""
-    pdu_funcs = ""
-    for f in fields:
-        if f._type == "absolute":
-            pdu_defines += "#define PACKET_MESH_{}_SIZE ({})    /**< Size of {} packet. */\n".format(f._name.upper(), f._total_offset // 8 + 2, f._name.lower())
-        else:
-            pdu_defines += "#define PACKET_MESH_{}_PDU_OFFSET    ({})    /**< Offset to {} payload. */\n".format(f._name.upper(), f._total_offset // 8, f._name.lower())
-            pdu_defines += "#define PACKET_MESH_{}_PDU_MAX_SIZE  ({})    /**< Max PDU size for {} packets. */\n".format(f._name.upper(), 31 - 2 - f._total_offset // 8, f._name.lower())
-            pdu_defines += "#define PACKET_MESH_{}_OVERHEAD_SIZE ({})    /**< Header overhead size for {} packets. */\n".format(f._name.upper(), f._total_offset // 8 + 2, f._name.lower())
-
-            pdu_funcs += """/**
+pdu_func_format_string = """/**
  * Gets the {lname} payload pointer.
  * @param[in,out] p_pkt Packet pointer.
  * @returns Pointer to the start of the upper transport PDU.
  */
-static inline uint8_t * packet_mesh_{lname}_payload_get(packet_mesh_t * p_pkt)
+static inline const void * packet_mesh_{lname}_payload_get(const {packet_type} * p_pkt)
 {{
     return &p_pkt->pdu[PACKET_MESH_{uname}_PDU_OFFSET];
 }}
 
+"""
+packet_format_string = """
 /**
- * Gets the length of the upper transport PDU.
- * @param[in] p_pkt Packet pointer.
- * @returns Length of the upper transport PDU.
+ * Packet type for {full_name_human_readable} packet.
  */
-static inline uint8_t packet_mesh_{lname}_pdu_length_get(const packet_mesh_t * p_pkt)
+typedef struct
 {{
-    return p_pkt->length - sizeof(p_pkt->ad_type) - PACKET_MESH_{uname}_PDU_OFFSET;
-}}
+    uint8_t pdu[{maxlen}];
+}} {pdu_type};
+"""
 
-""".format(lname=f._name.lower(), uname=f._name.upper())
+if __name__ == "__main__":
+    fields = json_reads()
+    pdu_defines = ""
+    pdu_types = {}
+    pdu_strings = ""
+    pdu_funcs = ""
+    packet_lengths = {}
+    for f in fields:
+        if f._type == "absolute":
+            pdu_defines += "#define PACKET_MESH_{}_SIZE ({})    /**< Size of {} packet. */\n\n".format(f.get_full_name().upper(), f._max_length, f.get_full_name(' ').lower())
+        elif f._type == "variable":
+            pdu_defines += "#define PACKET_MESH_{}_MAX_SIZE      ({})    /**< Size of {} packet. */\n".format(f.get_full_name().upper(), f._max_length, f.get_full_name(' ').lower())
+            pdu_defines += "#define PACKET_MESH_{}_PDU_OFFSET    ({})    /**< Offset to {} payload. */\n".format(f.get_full_name().upper(), f._total_offset // 8, f.get_full_name(' ').lower())
+            pdu_defines += "#define PACKET_MESH_{}_PDU_MAX_SIZE  ({})    /**< Max PDU size for {} packets. */\n\n".format(f.get_full_name().upper(), f._max_length - (f._total_offset // 8), f.get_full_name(' ').lower())
+
+            pdu_funcs += pdu_func_format_string.format(lname=f.get_full_name().lower(), uname=f.get_full_name().upper(), packet_type=f._packet_type)
+
+
+        if not f._packet_type in pdu_types or f._max_length > pdu_types[f._packet_type]:
+            pdu_types[f._packet_type] = f._max_length
+
+
+    for pdu in pdu_types:
+        pdu_strings += packet_format_string.format(full_name_human_readable=pdu.replace('_', ' ')[len('packet_mesh_'):-len('_packet_t')], pdu_type=pdu, maxlen=pdu_types[pdu])
 
     blob = []
     for fmt in fields:
         for f in fmt.get_fields():
-            if f not in blob:
-                blob += [f]
+            blob += [f]
 
     print(HEADER_START)
     for f in blob:
@@ -464,6 +483,9 @@ static inline uint8_t packet_mesh_{lname}_pdu_length_get(const packet_mesh_t * p
             print(fun)
 
     print(pdu_defines.strip(), "\n")
+
+    print(pdu_strings.strip(), "\n")
+
     print(pdu_funcs.strip())
 
     for f in blob:

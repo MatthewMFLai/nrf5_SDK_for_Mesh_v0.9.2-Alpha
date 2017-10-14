@@ -228,3 +228,22 @@ void test_next_get(void)
     TEST_ASSERT_EQUAL(63, bitfield_next_get(bitfield64, 64, 40));
 }
 
+void test_popcount(void)
+{
+    uint32_t bitfield[BITFIELD_BLOCK_COUNT(64)];
+    bitfield_clear_all(bitfield, 64);
+    TEST_ASSERT_EQUAL(0, bitfield_popcount(bitfield, 64));
+
+    bitfield_set(bitfield, 1);
+    TEST_ASSERT_EQUAL(1, bitfield_popcount(bitfield, 64));
+
+    bitfield_set(bitfield, 0);
+    TEST_ASSERT_EQUAL(2, bitfield_popcount(bitfield, 64));
+
+    bitfield_set(bitfield, 63);
+    TEST_ASSERT_EQUAL(3, bitfield_popcount(bitfield, 64));
+
+    bitfield_set_all(bitfield, 64);
+    TEST_ASSERT_EQUAL(64, bitfield_popcount(bitfield, 64));
+}
+

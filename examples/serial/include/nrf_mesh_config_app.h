@@ -87,10 +87,13 @@
 /**
  * The number of elements in the application.
  *
+ * @info This value has to be greater than two to fit the configuration and health models,
+ * plus the number of models needed by the application.
+ *
  * @warning If the application is to support multiple _instances_ of the _same_ model, they cannot
  * belong in the same element and a separate element is needed for the new instance.
  */
-#define ACCESS_ELEMENT_COUNT (1)
+#define ACCESS_ELEMENT_COUNT (2)
 
 /**
  * The number of allocated subscription lists for the application.

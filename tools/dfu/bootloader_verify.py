@@ -135,6 +135,7 @@ def reset_device(serial_number, port):
     except:
         print("ERROR: Could not open COM port " + port)
         exit(1)
+    family = get_device_family(serial_number)
     nrfjprog("-s " + serial_number + " --reset --family " + family)
     time.sleep(0.2)
     response = read_serial_event(s)

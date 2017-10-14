@@ -66,7 +66,7 @@
                            (GPIO_PIN_CNF_DIR_Input << GPIO_PIN_CNF_DIR_Pos))
 #endif
 
-#if NRF51
+#if defined(NRF51)
 #define GPIOTE_IRQ_LEVEL (3)
 #else
 #define GPIOTE_IRQ_LEVEL (6)
@@ -77,6 +77,7 @@
  *****************************************************************************/
 
 #if BUTTON_BOARD
+static uint8_t m_buttons_list[BUTTONS_NUMBER] = BUTTONS_LIST;
 static uint32_t m_last_button_press;
 static hal_button_handler_cb_t m_button_handler_cb;
 #endif
@@ -147,9 +148,9 @@ uint32_t hal_buttons_init(hal_button_handler_cb_t cb)
     }
     m_button_handler_cb = cb;
 
-    for (uint32_t btn = BUTTON_START; btn <= BUTTON_STOP; ++btn)
+    for (uint32_t i = 0; i < BUTTONS_NUMBER ; ++i)
     {
-        NRF_GPIO->PIN_CNF[btn] = BUTTON_PIN_CONFIG;
+        NRF_GPIO->PIN_CNF[m_buttons_list[i]] = BUTTON_PIN_CONFIG;
     }
 
     NRF_GPIOTE->INTENSET = GPIOTE_INTENSET_PORT_Msk;
@@ -175,7 +176,7 @@ void GPIOTE_IRQHandler(void)
          * NOTE: There is a bug with this at the wrap-around for the RTC0 where the button could be
          * pressed before HAL_BUTTON_PRESS_FREQUENCY has passed a single time. It doesn't matter practically.
          */
-        if ((~NRF_GPIO->IN & (1 << (BUTTON_START + i))) &&
+        if ((~NRF_GPIO->IN & (1 << (m_buttons_list[i]))) &&
             TIMER_DIFF(m_last_button_press, NRF_RTC0->COUNTER) > HAL_BUTTON_PRESS_FREQUENCY)
         {
             m_last_button_press = NRF_RTC0->COUNTER;

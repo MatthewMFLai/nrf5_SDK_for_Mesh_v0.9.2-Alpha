@@ -42,9 +42,7 @@
 #include "nrf_mesh_config_serial.h"
 #include "serial_mock.h"
 #include "serial_status.h"
-#include "radio_mock.h"
-#include "bearer_adv_mock.h"
-#include "packet_mgr_mock.h"
+#include "advertiser_mock.h"
 #include "hal_mock.h"
 
 #define CMD_LENGTH_CHECK(_opcode, _intended_length)                                                   \
@@ -117,9 +115,7 @@ void setUp(void)
 {
     serial_mock_Init();
     hal_mock_Init();
-    radio_mock_Init();
-    bearer_adv_mock_Init();
-    packet_mgr_mock_Init();
+    advertiser_mock_Init();
 
     m_assertion_handler = assertion_handler;
     m_tx_cb_count = 0;
@@ -132,12 +128,8 @@ void tearDown(void)
     serial_mock_Destroy();
     hal_mock_Verify();
     hal_mock_Destroy();
-    radio_mock_Verify();
-    radio_mock_Destroy();
-    bearer_adv_mock_Verify();
-    bearer_adv_mock_Destroy();
-    packet_mgr_mock_Verify();
-    packet_mgr_mock_Destroy();
+    advertiser_mock_Verify();
+    advertiser_mock_Destroy();
 }
 
 /*****************************************************************************
@@ -201,10 +193,20 @@ void test_device_rx(void)
 
 void test_beacon(void)
 {
+    advertiser_t adv = {0};
+    adv.config.channels.channel_map[0] = 37;
+    adv.config.channels.channel_map[1] = 38;
+    adv.config.channels.channel_map[2] = 39;
+    adv.config.channels.count = 3;
+    adv.config.advertisement_interval_us = BEARER_ADV_INT_DEFAULT_MS * 1000;
+    adv.broadcast.params.radio_config.tx_power = 0x12;
+
     for (uint32_t i = 0; i < NRF_MESH_SERIAL_BEACON_SLOTS; i++)
     {
-        bearer_adv_advertiser_init_Expect(NULL);
-        bearer_adv_advertiser_init_IgnoreArg_p_adv();
+        advertiser_instance_init_Expect(NULL, NULL, NULL, 3 * ADVERTISER_PACKET_BUFFER_PACKET_MAXLEN);
+        advertiser_instance_init_IgnoreArg_p_adv();
+        advertiser_instance_init_IgnoreArg_p_buffer();
+        advertiser_instance_init_ReturnMemThruPtr_p_adv(&adv, sizeof(adv));
     }
     serial_handler_device_init();
 
@@ -217,13 +219,11 @@ void test_beacon(void)
     {
         cmd.payload.cmd.device.beacon_params_get.beacon_slot = i;
 
-        radio_tx_power_get_ExpectAndReturn((radio_tx_power_t) 0x43);
-
         serial_evt_cmd_rsp_data_beacon_params_t rsp;
         rsp.beacon_slot = i;
-        rsp.tx_power = 0x43;
-        rsp.interval_ms = BEARER_ADV_INT_MIN_MS_DEFAULT;
-        rsp.channel_map = NRF_MESH_ADV_CHAN_DEFAULT;
+        rsp.tx_power = adv.broadcast.params.radio_config.tx_power;
+        rsp.interval_ms = adv.config.advertisement_interval_us / 1000;
+        rsp.channel_map = 0x07; // all three channels
         EXPECT_ACK_WITH_PAYLOAD(cmd.opcode, &rsp, sizeof(rsp));
         serial_handler_device_rx(&cmd);
     }
@@ -243,10 +243,25 @@ void test_beacon(void)
         cmd.payload.cmd.device.beacon_params_set.tx_power = 0x12;
         cmd.payload.cmd.device.beacon_params_set.interval_ms = 100 * (i + 1);
         cmd.payload.cmd.device.beacon_params_set.channel_map = 0x05;
-        bearer_adv_interval_reset_ExpectAndReturn(NULL, NRF_SUCCESS);
-        bearer_adv_interval_reset_IgnoreArg_p_adv();
+        advertiser_interval_set_Expect(NULL, cmd.payload.cmd.device.beacon_params_set.interval_ms);
+        advertiser_interval_set_IgnoreArg_p_adv();
+        adv.config.advertisement_interval_us =
+            cmd.payload.cmd.device.beacon_params_set.interval_ms * 1000;
+        advertiser_interval_set_ReturnMemThruPtr_p_adv(&adv, sizeof(adv));
+        advertiser_channels_t channels;
+        channels.channel_map[0] = 37;
+        channels.channel_map[1] = 39;
+        channels.channel_map[2] = 0;
+        channels.count = 2;
+        channels.randomize_order = false;
+        advertiser_channels_set_Expect(NULL, &channels);
+        advertiser_channels_set_IgnoreArg_p_adv();
+        adv.config.channels = channels;
+        advertiser_channels_set_ReturnMemThruPtr_p_adv(&adv, sizeof(adv));
+
         EXPECT_ACK(cmd.opcode, NRF_SUCCESS);
         serial_handler_device_rx(&cmd);
+        advertiser_mock_Verify();
     }
     /* out-of-bounds beacon slot */
     cmd.payload.cmd.device.beacon_params_set.beacon_slot = NRF_MESH_SERIAL_BEACON_SLOTS;
@@ -262,11 +277,9 @@ void test_beacon(void)
     {
         cmd.payload.cmd.device.beacon_params_get.beacon_slot = i;
 
-        radio_tx_power_get_ExpectAndReturn((radio_tx_power_t) 0x43);
-
         serial_evt_cmd_rsp_data_beacon_params_t rsp;
         rsp.beacon_slot = i;
-        rsp.tx_power = 0x43;
+        rsp.tx_power = 0x12;
         rsp.interval_ms = 100 * (i + 1);
         rsp.channel_map = 0x05;
         EXPECT_ACK_WITH_PAYLOAD(cmd.opcode, &rsp, sizeof(rsp));
@@ -287,21 +300,20 @@ void test_beacon(void)
             sprintf(err_msg, "Payload size: %u, Beacon slot: %u", payload, i);
             cmd.payload.cmd.device.beacon_start.beacon_slot = i;
             memset(cmd.payload.cmd.device.beacon_start.data, i, payload);
-            packet_t packet;
+            adv_packet_t packet;
             memset(&packet, 0, sizeof(packet));
-            packet_generic_t * p_packet = (packet_generic_t *) &packet;
-            packet_mgr_alloc_ExpectAndReturn(NULL, 3 + 6 + payload, NRF_SUCCESS); /* size = header + addr + payload */
-            packet_mgr_alloc_IgnoreArg_pp_buffer();
-            packet_mgr_alloc_ReturnThruPtr_pp_buffer(&p_packet);
-            bearer_adv_tx_ExpectAndReturn(NULL, &packet, BEARER_ADV_REPEAT_INFINITE, NRF_SUCCESS);
-            bearer_adv_tx_IgnoreArg_p_adv();
+            advertiser_packet_alloc_ExpectAndReturn(NULL, payload, &packet);
+            advertiser_packet_alloc_IgnoreArg_p_adv();
+            advertiser_packet_send_Expect(NULL, &packet);
+            advertiser_packet_send_IgnoreArg_p_adv();
+
             EXPECT_ACK(cmd.opcode, NRF_SUCCESS);
             serial_handler_device_rx(&cmd);
-            TEST_ASSERT_EQUAL_HEX8_MESSAGE(6 + payload, packet.header.length, err_msg); /* length=addr + payload */
+            TEST_ASSERT_EQUAL_MESSAGE(ADVERTISER_REPEAT_INFINITE, packet.config.repeats, err_msg);
             if (payload != 0)
             {
                 TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(cmd.payload.cmd.device.beacon_start.data,
-                        packet.payload,
+                        packet.packet.payload,
                         payload,
                         err_msg);
             }
@@ -318,43 +330,21 @@ void test_beacon(void)
     EXPECT_ACK_NO_TRANSLATE(cmd.opcode, SERIAL_STATUS_ERROR_INVALID_LENGTH);
     serial_handler_device_rx(&cmd);
     /* fail packet allocation */
-    packet_t packet;
     cmd.length = 33;
-    packet_generic_t * p_packet = NULL;
-    packet_mgr_alloc_ExpectAndReturn(NULL, 3 + 6 + 31, 0x12345678); /* size = header + addr + payload */
-    packet_mgr_alloc_IgnoreArg_pp_buffer();
-    packet_mgr_alloc_ReturnThruPtr_pp_buffer(&p_packet);
-    EXPECT_ACK(cmd.opcode, 0x12345678);
-    serial_handler_device_rx(&cmd);
-    /* fail packet tx */
-    memset(&packet, 0, sizeof(packet));
-    p_packet = &packet;
-    packet_mgr_alloc_ExpectAndReturn(NULL, 3 + 6 + 31, NRF_SUCCESS); /* size = header + addr + payload */
-    packet_mgr_alloc_IgnoreArg_pp_buffer();
-    packet_mgr_alloc_ReturnThruPtr_pp_buffer(&p_packet);
-    bearer_adv_tx_ExpectAndReturn(NULL, &packet, BEARER_ADV_REPEAT_INFINITE, 0x12345678);
-    bearer_adv_tx_IgnoreArg_p_adv();
-    packet_mgr_free_Expect(p_packet);
-    EXPECT_ACK(cmd.opcode, 0x12345678);
+
+    advertiser_packet_alloc_ExpectAndReturn(NULL, cmd.length - 2, NULL);
+    advertiser_packet_alloc_IgnoreArg_p_adv();
+    EXPECT_ACK(cmd.opcode, NRF_ERROR_NO_MEM);
     serial_handler_device_rx(&cmd);
 
-    /* Stop the beacons, but fail. */
+    /* Stop the beacons */
     cmd.opcode = SERIAL_OPCODE_CMD_DEVICE_BEACON_STOP;
     cmd.length = 2;
     for (uint32_t i = 0; i < NRF_MESH_SERIAL_BEACON_SLOTS; i++)
     {
         cmd.payload.cmd.device.beacon_stop.beacon_slot = i;
-        bearer_adv_adv_stop_ExpectAndReturn(NULL, 0x12345678);
-        bearer_adv_adv_stop_IgnoreArg_p_adv();
-        EXPECT_ACK(cmd.opcode, 0x12345678);
-        serial_handler_device_rx(&cmd);
-    }
-    /* Successfully stop the beacons */
-    for (uint32_t i = 0; i < NRF_MESH_SERIAL_BEACON_SLOTS; i++)
-    {
-        cmd.payload.cmd.device.beacon_stop.beacon_slot = i;
-        bearer_adv_adv_stop_ExpectAndReturn(NULL, NRF_SUCCESS);
-        bearer_adv_adv_stop_IgnoreArg_p_adv();
+        advertiser_disable_Expect(NULL);
+        advertiser_disable_IgnoreArg_p_adv();
         EXPECT_ACK(cmd.opcode, NRF_SUCCESS);
         serial_handler_device_rx(&cmd);
     }

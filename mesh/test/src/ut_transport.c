@@ -70,7 +70,7 @@
 #define IV_INDEX 0x12345678
 #define MSG_SEQ_NO 0x000007
 
-/* Test message #18 from the specification: */
+/* Test message #18 from the Mesh Profile Specification v1.0: */
 #define PACKET_TV0_UNENCRYPTED {0x18, AD_TYPE_MESH, 0x68, 0x03, 0x00, 0x00, 0x07, 0x12, 0x01, 0xff, 0xff, 0x66, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 #define PACKET_TV0_TRANSPORT   {0x18, AD_TYPE_MESH, 0x68, 0x03, 0x00, 0x00, 0x07, 0x12, 0x01, 0xff, 0xff, 0x66, 0x5a, 0x8b, 0xde, 0x6d, 0x91, 0x06, 0xea, 0x07, 0x8a, 0x00, 0x00, 0x00, 0x00}
 
@@ -113,6 +113,8 @@ static unsigned m_event_push_count;
 
 static unsigned m_timers_added;
 static timestamp_t m_time_now;
+
+static bool m_ack_test_started;
 
 typedef enum
 {
@@ -196,6 +198,22 @@ uint32_t network_pkt_out(packet_t * p_packet, const nrf_mesh_network_secmat_t * 
     {
         free(mp_net_pkt_out);
     }
+
+    if (m_ack_test_started)
+    {
+         static uint8_t m_ack_counter = 0;
+
+         if (m_ack_counter == 0)
+         {
+             m_ack_counter++;
+             TEST_ASSERT_EQUAL_INT8(p_packet->payload[3] & PACKET_MESH_TTL_MASK, 0);
+         }
+         else
+         {
+             TEST_ASSERT_EQUAL_INT8(p_packet->payload[3] & PACKET_MESH_TTL_MASK, TRANSPORT_SAR_SEGACK_TTL_DEFAULT);
+         }
+    }
+
 
     mp_net_pkt_out = malloc(p_packet->payload[0] + 1);
     TEST_ASSERT_NOT_NULL(mp_net_pkt_out);
@@ -350,7 +368,7 @@ void tearDown(void)
     net_state_mock_Destroy();
 }
 
-void setup_test_packet(const uint8_t * network_packet)
+static void setup_test_packet(const uint8_t * network_packet)
 {
     uint32_t size = (network_packet[0] + 1) + sizeof(ble_packet_hdr_t) + BLE_GAP_ADDR_LEN;
     printf("Size: %u %u\n", size, network_packet[0]);
@@ -780,3 +798,36 @@ void test_big_mic(void)
 {
     TEST_IGNORE_MESSAGE("Test not implemented");
 }
+
+void test_ttl0_ack(void)
+{
+    const uint8_t sar_rx_pkts[2][31] =
+    {
+        {0x1e, AD_TYPE_MESH, 0x68, 0x04, 0x31, 0x29, 0xab, 0x00, 0x03, 0x12, 0x01, 0x80, 0x26, 0xac, 0x00, 0xec, 0xe8, 0x88, 0xaa,
+            0x21, 0x69, 0x32, 0x6d, 0x23, 0xf3, 0xaf, 0xdf, 0x00, 0x00, 0x00, 0x00},
+        {0x1e, AD_TYPE_MESH, 0x68, 0x00, 0x31, 0x29, 0xac, 0x00, 0x04, 0x12, 0x01, 0x80, 0x26, 0xac, 0x00, 0xcf, 0xdc, 0x18, 0xc5,
+            0x2f, 0xde, 0xf7, 0x72, 0x69, 0xff, 0x44, 0x33, 0x00, 0x00, 0x00, 0x00}
+    };
+
+    uint32_t status = NRF_SUCCESS;
+    packet_meta_t meta = {0};
+    uint8_t meta_addr[6];
+    meta.p_addr = meta_addr;
+
+    m_ack_test_started = true;
+
+    bearer_event_critical_section_begin_Expect();
+    bearer_event_critical_section_begin_Expect();
+    bearer_event_critical_section_end_Expect();
+    bearer_event_critical_section_end_Expect();
+
+    for (int i = 0; i < 2; ++i)
+    {
+        setup_test_packet(&sar_rx_pkts[i][0]);
+        status = transport_pkt_in(packet_net_packet_get(mp_packet), &meta, &m_network, m_iv_index);
+        TEST_ASSERT_EQUAL(NRF_SUCCESS, status);
+    }
+
+    TEST_ASSERT_EQUAL(NRF_SUCCESS, transport_sar_process());
+}
+

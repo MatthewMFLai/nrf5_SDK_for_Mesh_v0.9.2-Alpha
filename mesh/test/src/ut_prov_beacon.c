@@ -47,7 +47,7 @@
 #include "event_mock.h"
 #include "enc_mock.h"
 
-/* Sample data from the specification, section 8.4.1 (unprovisioned device beacon without URI): */
+/* Sample data from the Mesh Profile Specification v1.0, section 8.4.1 (unprovisioned device beacon without URI): */
 #define UNPROV_SAMPLE_DATA_1                                                                                                                       \
 {                                                                                                                                                  \
     .uri = NULL,                                                                                                                                   \
@@ -60,7 +60,7 @@
     .beacon = {0x70, 0xcf, 0x7c, 0x97, 0x32, 0xa3, 0x45, 0xb6, 0x91, 0x49, 0x48, 0x10, 0xd2, 0xe9, 0xcb, 0xf4, 0xa0, 0x40} \
 }
 
-/* Sample data from the speciication, section 8.4.2 (unprovisioned device beacon with URI): */
+/* Sample data from the Mesh Profile Specification v1.0, section 8.4.2 (unprovisioned device beacon with URI): */
 #define UNPROV_SAMPLE_DATA_2                                                                                                                       \
 {                                                                                                                                                  \
     .uri = (URI_SCHEME_HTTPS "//www.example.com/mesh/products/light-switch-v3"),                                                                   \
@@ -84,13 +84,11 @@ typedef struct
 
 static nrf_mesh_evt_t  m_evt;
 static uint32_t m_evt_handle_calls_expected;
-static uint32_t m_evt_len;
 
 
 void setUp(void)
 {
     m_evt_handle_calls_expected = 0;
-    m_evt_len = 0;
     beacon_mock_Init();
     nrf_mesh_configure_mock_Init();
     event_mock_Init();
@@ -112,9 +110,14 @@ void tearDown(void)
 
 void evt_handle_cb(nrf_mesh_evt_t* p_evt, int calls)
 {
-    TEST_ASSERT_NOT_EQUAL(0, m_evt_len);
-    TEST_ASSERT_EQUAL_HEX8_ARRAY((uint8_t*) p_evt, (uint8_t*) &m_evt, m_evt_len);
     TEST_ASSERT_NOT_EQUAL(0, m_evt_handle_calls_expected--);
+    /* There's padding in the event struct, so we have to check fields manually: */
+    TEST_ASSERT_EQUAL(NRF_MESH_EVT_UNPROVISIONED_RECEIVED, p_evt->type);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(m_evt.params.unprov_recv.device_uuid, p_evt->params.unprov_recv.device_uuid, NRF_MESH_UUID_SIZE);
+    TEST_ASSERT_EQUAL(m_evt.params.unprov_recv.gatt_supported, p_evt->params.unprov_recv.gatt_supported);
+    TEST_ASSERT_EQUAL(m_evt.params.unprov_recv.uri_hash_present, p_evt->params.unprov_recv.uri_hash_present);
+    TEST_ASSERT_EQUAL(m_evt.params.unprov_recv.p_metadata, p_evt->params.unprov_recv.p_metadata);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(m_evt.params.unprov_recv.uri_hash, p_evt->params.unprov_recv.uri_hash, 4);
 }
 
 /*****************************************************************************
@@ -135,9 +138,10 @@ void test_tx(void)
             enc_s1_IgnoreArg_p_out();
             enc_s1_ReturnMemThruPtr_p_out(sample_data.uri_hash, NRF_MESH_KEY_SIZE);
         }
-        packet_t output;
-        beacon_create_ExpectWithArrayAndReturn(BEACON_TYPE_UNPROV, sample_data.beacon, sample_data.beacon_len, sample_data.beacon_len, &output);
-        TEST_ASSERT_EQUAL_PTR(&output, prov_beacon_unprov_build(sample_data.uri, sample_data.oob_info));
+        adv_packet_t output;
+        advertiser_t adv;
+        beacon_create_ExpectWithArrayAndReturn(&adv, 1, BEACON_TYPE_UNPROV, sample_data.beacon, sample_data.beacon_len, sample_data.beacon_len, &output);
+        TEST_ASSERT_EQUAL_PTR(&output, prov_beacon_unprov_build(&adv, sample_data.uri, sample_data.oob_info));
 
         /* Fail beacon_enable */
         nrf_mesh_configure_device_uuid_get_IgnoreAndReturn(sample_data.uuid);
@@ -147,9 +151,9 @@ void test_tx(void)
             enc_s1_IgnoreArg_p_out();
             enc_s1_ReturnMemThruPtr_p_out(sample_data.uri_hash, NRF_MESH_KEY_SIZE);
         }
-        beacon_create_ExpectWithArrayAndReturn(BEACON_TYPE_UNPROV, sample_data.beacon, sample_data.beacon_len, sample_data.beacon_len, NULL);
+        beacon_create_ExpectWithArrayAndReturn(&adv, 1, BEACON_TYPE_UNPROV, sample_data.beacon, sample_data.beacon_len, sample_data.beacon_len, NULL);
 
-        TEST_ASSERT_EQUAL_PTR(NULL, prov_beacon_unprov_build(sample_data.uri, sample_data.oob_info));
+        TEST_ASSERT_EQUAL_PTR(NULL, prov_beacon_unprov_build(&adv, sample_data.uri, sample_data.oob_info));
     }
 
 }
@@ -161,15 +165,11 @@ void test_rx(void)
     {
         printf("sample data %d\n", i);
         unprov_sample_data_t sample_data = sample_datas[i];
-        uint8_t adv_addr[BLE_GAP_ADDR_LEN] = {1, 2, 3, 4, 5, 6};
-        packet_meta_t meta;
-        meta.addr_type = 1;
-        meta.p_addr = adv_addr;
-        meta.timestamp = 0x12345678;
-        meta.rssi = -78;
+        nrf_mesh_rx_metadata_t meta;
+        memset(&m_evt, 0, sizeof(m_evt));
+        meta.source = NRF_MESH_RX_SOURCE_SCANNER;
         m_evt.type = NRF_MESH_EVT_UNPROVISIONED_RECEIVED;
-        memcpy(m_evt.params.unprov_recv.adv_addr.addr, adv_addr, BLE_GAP_ADDR_LEN);
-        m_evt.params.unprov_recv.adv_addr.addr_type = 1;
+        m_evt.params.unprov_recv.p_metadata = &meta;
         memcpy(m_evt.params.unprov_recv.device_uuid, sample_data.uuid, NRF_MESH_UUID_SIZE);
         if (sample_data.uri == NULL)
         {
@@ -179,26 +179,24 @@ void test_rx(void)
         {
             memcpy(m_evt.params.unprov_recv.uri_hash, sample_data.uri_hash, NRF_MESH_BEACON_UNPROV_URI_HASH_SIZE);
         }
-        m_evt.params.unprov_recv.rssi = -78;
         m_evt.params.unprov_recv.gatt_supported = false;
         m_evt.params.unprov_recv.uri_hash_present = (sample_data.uri != NULL);
 
-        m_evt_len = (sizeof(nrf_mesh_evt_unprov_recv_t) + 1);
         m_evt_handle_calls_expected = 1;
         event_handle_StubWithCallback(evt_handle_cb);
 
-        prov_beacon_unprov_pkt_in(sample_data.beacon, sample_data.beacon_len, &meta);
+        prov_beacon_unprov_packet_in(sample_data.beacon, sample_data.beacon_len, &meta);
         TEST_ASSERT_EQUAL(0, m_evt_handle_calls_expected);
 
         /* Disable reporting: */
         prov_beacon_unprov_report(false);
-        prov_beacon_unprov_pkt_in(sample_data.beacon, sample_data.beacon_len, &meta);
+        prov_beacon_unprov_packet_in(sample_data.beacon, sample_data.beacon_len, &meta);
         TEST_ASSERT_EQUAL(0, m_evt_handle_calls_expected);
 
         /* Enable reporting: */
         prov_beacon_unprov_report(true);
         m_evt_handle_calls_expected = 1;
-        prov_beacon_unprov_pkt_in(sample_data.beacon, sample_data.beacon_len, &meta);
+        prov_beacon_unprov_packet_in(sample_data.beacon, sample_data.beacon_len, &meta);
         TEST_ASSERT_EQUAL(0, m_evt_handle_calls_expected);
     }
 }

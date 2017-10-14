@@ -35,8 +35,8 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef NRF_MESH_SDK_CONFIG_H
-#define NRF_MESH_SDK_CONFIG_H
+#ifndef NRF_MESH_SDK_H
+#define NRF_MESH_SDK_H
 
 #include "nrf_soc.h"
 #if defined(S130) || defined(S132) || defined(S140)
@@ -59,30 +59,17 @@
         }                                                               \
     } while (0)
 
-
-/** App Error Handler
- *
- * @param error_code   error_code
- * @param line_number  line_number
- * @param filename     filename
- *
- */
 void app_error_handler(uint32_t error_code, uint32_t line_number, const uint8_t * filename);
 
-/** Mesh Error Handler
- *
- * @param pc Program Counter of the triggered assert.
- */
 void mesh_assert_handler(uint32_t pc);
 
-#if defined(S130) || defined(S132)
+#if defined(S130) || defined(S132) || defined(S140)
 void softdevice_assert_handler(uint32_t id, uint32_t pc, uint32_t info);
 uint32_t mesh_softdevice_setup(nrf_clock_lf_cfg_t lfc_cfg);
 #elif defined(S110)
 void softdevice_assert_handler(uint32_t pc, uint16_t line_number, const uint8_t * p_filename);
 uint32_t mesh_softdevice_setup(nrf_clock_lfclksrc_t lfclksrc);
 #endif
-
-
+void mesh_core_setup(void);
 
 #endif

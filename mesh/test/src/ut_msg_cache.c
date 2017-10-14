@@ -39,11 +39,7 @@
 #include <stdbool.h>
 #include "unity.h"
 #include "msg_cache.h"
-#include "transport.h"
 
-#define MESH_NET_PACKET_PAYLOAD_MIN_LENGTH (sizeof(packet_net_t) + 4)
-
-static uint8_t packet_buf[BLE_ADV_PACKET_PAYLOAD_MAX_LENGTH];
 
 void setUp(void)
 {
@@ -60,172 +56,128 @@ void tearDown(void)
 
 void test_msg_cache_entry_add_new(void)
 {
-    memset(packet_buf, 0, sizeof(packet_buf));
-
-    packet_net_t* p_packet = (packet_net_t*) &packet_buf[0];
-    packet_net_payload_size_set(p_packet, MESH_NET_PACKET_PAYLOAD_MIN_LENGTH);
-    p_packet->ad_type = AD_TYPE_MESH;
+    uint16_t src;
+    uint32_t seq;
 
     /* sneaky "empty entry" entry */
-    p_packet->header.src = NRF_MESH_ADDR_UNASSIGNED;
-    p_packet->header.seq = 0;
-    packet_net_payload_size_set(p_packet, MESH_NET_PACKET_PAYLOAD_MIN_LENGTH);
-    packet_net_mic_set(p_packet, 0);
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+    src = NRF_MESH_ADDR_UNASSIGNED;
+    seq = 0;
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
     msg_cache_entry_add(0, 0);
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
-
-    /* invalid length entry */
-    p_packet->header.src = 0x1234;
-    p_packet->header.seq = 0xAAAA00;
-    p_packet->length = 1;
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, p_packet->header.seq);
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    packet_net_payload_size_set(p_packet, MESH_NET_PACKET_PAYLOAD_MIN_LENGTH);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
 
     /* valid entry */
-    p_packet->header.src = 0x1234;
-    p_packet->header.seq = 0xAAAA00;
-    packet_net_mic_set(p_packet, 0xAAAAAA00); /* packet mic changes if we change the header */
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+    src = 0x1234;
+    seq = 0xAAAA00;
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
 
     /* same address */
-    p_packet->header.src = 0x1234;
-    p_packet->header.seq = 0xAAAA01;
-    packet_net_mic_set(p_packet, 0xAAAAAA01);/* packet mic changes if we change the header */
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+    src = 0x1234;
+    seq = 0xAAAA01;
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
 
     /* same seq */
-    p_packet->header.src = 0xAAAA;
-    p_packet->header.seq = 0xAAAA01;
-    packet_net_mic_set(p_packet, 0xAAAAAA02);/* packet mic changes if we change the header */
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+    src = 0xAAAA;
+    seq = 0xAAAA01;
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
 
     /* lower seq */
-    p_packet->header.src = 0xAAAA;
-    p_packet->header.seq = 0x000001;
-    packet_net_mic_set(p_packet, 0xAAAAAA03);/* packet mic changes if we change the header */
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+    src = 0xAAAA;
+    seq = 0x000001;
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
 
     /* check if old entries are still there */
     if (MSG_CACHE_ENTRY_COUNT > 3)
     {
-        p_packet->header.src = 0x1234;
-        p_packet->header.seq = 0xAAAA00;
-        packet_net_mic_set(p_packet, 0xAAAAAA00); /* packet mic changes if we change the header */
-        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+        src = 0x1234;
+        seq = 0xAAAA00;
+
+        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
     }
     else
     {
-        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
     }
 
     if (MSG_CACHE_ENTRY_COUNT > 2)
     {
-        p_packet->header.src = 0x1234;
-        p_packet->header.seq = 0xAAAA01;
-        packet_net_mic_set(p_packet, 0xAAAAAA01);/* packet mic changes if we change the header */
-        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+        src = 0x1234;
+        seq = 0xAAAA01;
+
+        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
     }
     else
     {
-        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
     }
 
     if (MSG_CACHE_ENTRY_COUNT > 1)
     {
-        p_packet->header.src = 0xAAAA;
-        p_packet->header.seq = 0xAAAA01;
-        packet_net_mic_set(p_packet, 0xAAAAAA02);/* packet mic changes if we change the header */
-        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+        src = 0xAAAA;
+        seq = 0xAAAA01;
+
+        TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
     }
     else
     {
-        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+        TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
     }
 }
 
 void test_msg_cache_entry_overflow(void)
 {
-    memset(packet_buf, 0, sizeof(packet_buf));
-    packet_net_t* p_packet = (packet_net_t*) &packet_buf[0];
-    p_packet->ad_type = AD_TYPE_MESH;
-    uint32_t mic = 0xAA000000;
-    p_packet->header.src = 0x1000;
-    p_packet->header.seq = 0xAAAA00;
-    packet_net_payload_size_set(p_packet, MESH_NET_PACKET_PAYLOAD_MIN_LENGTH);
+    uint16_t src = 0x1000;
+    uint32_t seq = 0xAAAA00;
 
     /* fill all */
     for (uint32_t i = 0; i < MSG_CACHE_ENTRY_COUNT; ++i)
     {
-        p_packet->header.src++;
-        p_packet->header.seq = LE2BE24(BE2LE24(p_packet->header.seq) + 1);
-        packet_net_mic_set(p_packet, mic++);
-        TEST_ASSERT_FALSE(msg_cache_entry_exists(p_packet));
-        msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-        TEST_ASSERT_TRUE(msg_cache_entry_exists(p_packet));
+        src++;
+        seq++;
+
+        TEST_ASSERT_FALSE(msg_cache_entry_exists(src, seq));
+        msg_cache_entry_add(src, seq);
+        TEST_ASSERT_TRUE(msg_cache_entry_exists(src, seq));
     }
 
     /* check that all entries are still there */
-    p_packet->header.src = 0x1000;
-    p_packet->header.seq = 0xAAAA00;
-    mic = 0xAA000000;
+    src = 0x1000;
+    seq = 0xAAAA00;
     for (uint32_t i = 0; i < MSG_CACHE_ENTRY_COUNT; ++i)
     {
-        p_packet->header.src++;
-        p_packet->header.seq = LE2BE24(BE2LE24(p_packet->header.seq) + 1);
-        packet_net_mic_set(p_packet, mic++);
-        TEST_ASSERT_TRUE(msg_cache_entry_exists(p_packet));
+        src++;
+        seq++;
+
+        TEST_ASSERT_TRUE(msg_cache_entry_exists(src, seq));
     }
 
     /* overflow */
-    p_packet->header.src++;
-    p_packet->header.seq = LE2BE24(BE2LE24(p_packet->header.seq) + 1);
-    packet_net_mic_set(p_packet, mic++);
-    TEST_ASSERT_FALSE(msg_cache_entry_exists(p_packet));
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_TRUE(msg_cache_entry_exists(p_packet));
+    src++;
+    seq++;
+    TEST_ASSERT_FALSE(msg_cache_entry_exists(src, seq));
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_TRUE(msg_cache_entry_exists(src, seq));
 
     /* first entry should no longer be valid */
-    p_packet->header.src = 0x1001;
-    p_packet->header.seq = 0xAAAA01;
-    packet_net_mic_set(p_packet, 0xAA000000);
-    TEST_ASSERT_FALSE(msg_cache_entry_exists(p_packet));
-}
-
-void test_msg_cache_entry_add_invalid_length(void)
-{
-    memset(packet_buf, 0, sizeof(packet_buf));
-    packet_net_t* p_packet = (packet_net_t*) &packet_buf[0];
-    packet_net_payload_size_set(p_packet, 1);
-    p_packet->ad_type = AD_TYPE_MESH;
-    p_packet->header.src = 0x1000;
-    p_packet->header.seq = 0xAAAA00;
-
-    msg_cache_entry_add(p_packet->header.src, p_packet->header.seq);
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+    src = 0x1001;
+    seq = 0xAAAA01;
+    TEST_ASSERT_FALSE(msg_cache_entry_exists(src, seq));
 }
 
 void test_clear(void)
 {
-    memset(packet_buf, 0, sizeof(packet_buf));
-    packet_net_t* p_packet = (packet_net_t*) &packet_buf[0];
-    packet_net_payload_size_set(p_packet, MESH_NET_PACKET_PAYLOAD_MIN_LENGTH);
-    p_packet->ad_type = AD_TYPE_MESH;
-
-    p_packet->header.src = 0x1234;
-    p_packet->header.seq = 0xAAAA00;
-    msg_cache_entry_add(p_packet->header.src, BE2LE24(p_packet->header.seq));
-    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(p_packet));
+    uint16_t src = 0x1234;
+    uint32_t seq = 0xAAAA00;
+    msg_cache_entry_add(src, seq);
+    TEST_ASSERT_EQUAL(true, msg_cache_entry_exists(src, seq));
     msg_cache_clear();
-    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(p_packet));
+    TEST_ASSERT_EQUAL(false, msg_cache_entry_exists(src, seq));
 }

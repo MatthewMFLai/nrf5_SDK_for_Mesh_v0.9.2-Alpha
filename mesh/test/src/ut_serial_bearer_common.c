@@ -170,15 +170,17 @@ void receive_char(packet_buffer_packet_t ** pp_buf_packet, uint8_t val, bool che
         packet_buffer_reserve_IgnoreArg_pp_packet();
         packet_buffer_reserve_ReturnThruPtr_pp_packet(pp_buf_packet);
     }
+
+    uint8_t local_pacman_buff[100];
+    packet_buffer_packet_t * p_local_buf_packet = (packet_buffer_packet_t *) local_pacman_buff;
     if (sends_error_msg)
     {
-        uint8_t local_pacman_buff[100];
-        packet_buffer_packet_t * p_local_buf_packet = (packet_buffer_packet_t *) local_pacman_buff;
         serial_buffer_get_calls(SERIAL_EVT_CMD_RSP_LEN_OVERHEAD, &p_local_buf_packet);
         serial_packet_t * p_packet = (serial_packet_t *)p_local_buf_packet->packet;
         p_packet->length = SERIAL_EVT_CMD_RSP_LEN_OVERHEAD;
         serial_transmit_packet_buf_calls(p_packet, &p_local_buf_packet);
     }
+
     m_rx_cb(val);
 }
 
@@ -208,10 +210,10 @@ void setUp(void)
         test_data[i] = i;
     }
 
-    packet_buffer_init_Expect(NULL, NULL, ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), WORD_SIZE));
+    packet_buffer_init_Expect(NULL, NULL, 2 * ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), WORD_SIZE));
     packet_buffer_init_IgnoreArg_p_pool();
     packet_buffer_init_IgnoreArg_p_buffer();
-    packet_buffer_init_Expect(NULL, NULL, ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), WORD_SIZE));
+    packet_buffer_init_Expect(NULL, NULL, 2 * ALIGN_VAL(sizeof(serial_packet_t) + sizeof(packet_buffer_packet_t), WORD_SIZE));
     packet_buffer_init_IgnoreArg_p_pool();
     packet_buffer_init_IgnoreArg_p_buffer();
     serial_uart_receive_set_Expect(true);

@@ -42,15 +42,15 @@
 #include <cmock.h>
 #include <unity.h>
 
-#include "bearer_adv_mock.h"
+#include "advertiser_mock.h"
 #include "provisioning_mock.h"
 #include "timer_scheduler_mock.h"
-#include "packet_mgr_mock.h"
 #include "rand_mock.h"
 #include "prov_beacon_mock.h"
 #include "nrf_mesh_mock.h"
 #include "nrf_mesh_configure_mock.h"
 #include "timer_mock.h"
+#include "bearer_event_mock.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -58,24 +58,24 @@
 #include <string.h>
 #include <stdlib.h>
 
-/* Transaction start values for each role (from mesh core spec d09r19, section 5.2.1) */
+/* Transaction start values for each role (from Mesh Profile Specification v1.0, section 5.2.1) */
 #define PROVISIONER_TRANSACTION_START_VALUE 0
 #define PROVISIONEE_TRANSACTION_START_VALUE 0x80
 
 #define BLE_ADV_OVERHEAD (BLE_GAP_ADDR_LEN + sizeof(ble_ad_data_t) /* length field and AD Type*/)
-#define PROV_ADV_OVERHEAD (4 /*link ID*/ + 1 /* transaction no*/)
-/** The largest provisioning PDU length (copied from mesh core spec d09r19, table 5.3: 64 byte payload + 1 for pdu type). */
+#define PROV_ADV_OVERHEAD (sizeof(ble_ad_data_t) + 4 /*link ID*/ + 1 /* transaction no*/)
+/** The largest provisioning PDU length (copied from Mesh Profile Specification v1.0, table 5.3: 64 byte payload + 1 for pdu type). */
 #define PROV_PAYLOAD_MAX_LENGTH  65
 #define PROV_LINK_OPEN_DATA_SIZE 17
 #define PROV_LINK_ACK_DATA_SIZE 1
 #define PROV_LINK_CLOSE_DATA_SIZE 2
 #define PROV_TRANS_ACK_DATA_SIZE 1
-/** The largest payload length in a single provisioning data packet see Table 5.2 in mesh core spec (d09r19) */
+/** The largest payload length in a single provisioning data packet see Table 5.2 in Mesh Profile Specification v1.0 */
 #define GENERIC_PROV_PDU_MAX_LEN 24
-/** Max see Figure 5.3 in mesh core spec (d09r19) */
+/** Max see Figure 5.3 in Mesh Profile Specification v1.0 */
 #define PROV_START_PDU_HEADER_SIZE (1 /*SegN | GPCF */ + 2 /*Total length */ + 1 /* FCS */)
 #define PROV_START_PDU_PAYLOAD_MAX_LEN (GENERIC_PROV_PDU_MAX_LEN - PROV_START_PDU_HEADER_SIZE)
-/** Max see Figure 5.5 in mesh core spec (d09r19) */
+/** Max see Figure 5.5 in Mesh Profile Specification v1.0 */
 #define PROV_CONTINUE_PDU_HEADER_SIZE (1 /*SegN | GPCF */)
 #define PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN (GENERIC_PROV_PDU_MAX_LEN - PROV_CONTINUE_PDU_HEADER_SIZE)
 
@@ -88,38 +88,50 @@
 
 #define PROV_BEARER_ADV_UNACKED_REPEAT_COUNT    (4)
 
-static packet_t m_packet;
-static packet_generic_t * mp_packet;
+/** Flag the module should use to trigger async callback. */
+#define ASYNC_FLAG  0xF1A6F1A6
 
-#define ALLOC_AND_TX(P_ADV, ALLOC_SIZE, ALLOC_RETURN, TX_REPEAT, TX_RETURN)               \
-do                                                                                        \
-{                                                                                         \
-    mp_packet = &m_packet;                                                                \
-    packet_mgr_alloc_ExpectAndReturn(NULL, ALLOC_SIZE, ALLOC_RETURN);                     \
-    packet_mgr_alloc_IgnoreArg_pp_buffer();                                               \
-    packet_mgr_alloc_ReturnMemThruPtr_pp_buffer(&mp_packet, sizeof(packet_generic_t **)); \
-    if (ALLOC_RETURN == NRF_SUCCESS)                                                      \
-    {                                                                                     \
-        bearer_adv_tx_ExpectAndReturn(P_ADV, mp_packet, TX_REPEAT, TX_RETURN);            \
-    }                                                                                     \
-}                                                                                         \
+static adv_packet_t m_packet;
+
+#define ALLOC_AND_TX(P_ADV, ALLOC_SIZE, SUCCESS)                                                \
+do                                                                                              \
+{                                                                                               \
+    advertiser_packet_alloc_ExpectAndReturn(P_ADV, ALLOC_SIZE, (SUCCESS) ? &m_packet : NULL);   \
+    if (SUCCESS)                                                                                \
+    {                                                                                           \
+        advertiser_packet_send_Expect(P_ADV, &m_packet);                                        \
+    }                                                                                           \
+}                                                                                               \
 while (0)
 
 static uint8_t data[PROV_PAYLOAD_MAX_LENGTH+1];
 static uint8_t uuid1[NRF_MESH_UUID_SIZE] = {0,1,2,3};
 static uint8_t uuid2[NRF_MESH_UUID_SIZE] = {9,10,11,12};
-static uint8_t link_open_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE];
-static uint8_t link_ack_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE];
-static uint8_t link_close_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE];
-static uint8_t trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + GENERIC_PROV_PDU_MAX_LEN];
-static uint8_t trans_ack_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE];
-static uint8_t minimal_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + 1];
+static uint8_t link_open_payload[PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE];
+static uint8_t link_ack_payload[PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE];
+static uint8_t link_close_payload[PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE];
+static uint8_t trans_data_payload[PROV_ADV_OVERHEAD + GENERIC_PROV_PDU_MAX_LEN];
+static uint8_t trans_ack_payload[PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE];
+static uint8_t minimal_payload[PROV_ADV_OVERHEAD + 1];
 
 static prov_bearer_if_tx_t           prov_bearer_adv_tx;
 static prov_bearer_if_listen_start_t prov_bearer_adv_listen;
 static prov_bearer_if_listen_stop_t  prov_bearer_adv_listen_stop;
 static prov_bearer_if_link_open_t    prov_bearer_adv_link_open;
 static prov_bearer_if_link_close_t   prov_bearer_adv_link_close;
+
+static nrf_mesh_rx_metadata_t m_dummy_metadata;
+
+static advertiser_tx_complete_cb_t m_tx_complete_cb;
+static bearer_event_flag_callback_t m_async_cb;
+
+static struct
+{
+    advertiser_t * p_advertiser;
+    uint8_t * p_adv_buf;
+    uint32_t adv_buf_size;
+    uint32_t calls;
+} m_expected_adv_init;
 
 nrf_mesh_assertion_handler_t m_assertion_handler;
 
@@ -129,21 +141,47 @@ void nrf_mesh_assertion_handler(uint32_t pc)
 }
 
 /********** Local Mock Functions **********/
+static void advertiser_instance_init_cb(advertiser_t * p_adv, advertiser_tx_complete_cb_t tx_cb, uint8_t * p_buffer, uint32_t buffer_size, int calls)
+{
+    TEST_ASSERT_EQUAL(m_expected_adv_init.p_advertiser, p_adv);
+    TEST_ASSERT_EQUAL(m_expected_adv_init.p_adv_buf, p_buffer);
+    TEST_ASSERT_EQUAL(m_expected_adv_init.adv_buf_size, buffer_size);
+    TEST_ASSERT_NOT_NULL(tx_cb);
+    TEST_ASSERT_NOT_EQUAL(0, m_expected_adv_init.calls);
+    m_expected_adv_init.calls--;
+    m_tx_complete_cb = tx_cb;
+}
 
+static void advertiser_instance_init_ExpectStub(advertiser_t * p_adv, uint8_t * p_buffer, uint32_t buffer_size)
+{
+    advertiser_instance_init_StubWithCallback(advertiser_instance_init_cb);
+    m_expected_adv_init.p_advertiser = p_adv;
+    m_expected_adv_init.p_adv_buf = p_buffer;
+    m_expected_adv_init.adv_buf_size = buffer_size;
+    m_expected_adv_init.calls++;
+}
+
+static bearer_event_flag_t bearer_event_flag_add_cb(bearer_event_flag_callback_t cb, int calls)
+{
+    TEST_ASSERT_NOT_NULL(cb);
+    m_async_cb = cb;
+    return ASYNC_FLAG;
+}
 /********** Test Setup **********/
 
 void setUp(void)
 {
     __LOG_INIT((LOG_SRC_PROV | LOG_SRC_TEST), LOG_LEVEL_ERROR, LOG_CALLBACK_DEFAULT);
 
-    bearer_adv_mock_Init();
+    advertiser_mock_Init();
     provisioning_mock_Init();
     timer_scheduler_mock_Init();
-    packet_mgr_mock_Init();
     rand_mock_Init();
     prov_beacon_mock_Init();
     nrf_mesh_mock_Init();
     timer_mock_Init();
+
+    bearer_event_flag_add_StubWithCallback(bearer_event_flag_add_cb);
 
     const prov_bearer_interface_t * p_bearer = prov_bearer_adv_interface_get();
     prov_bearer_adv_tx = p_bearer->tx;
@@ -161,22 +199,13 @@ void setUp(void)
 
 void tearDown(void)
 {
-    bearer_adv_mock_Verify();
-    provisioning_mock_Verify();
-    timer_scheduler_mock_Verify();
-    packet_mgr_mock_Verify();
-    rand_mock_Verify();
-    prov_beacon_mock_Verify();
-    nrf_mesh_mock_Verify();
-    timer_mock_Verify();
-    bearer_adv_mock_Verify();
-    bearer_adv_mock_Destroy();
+    TEST_ASSERT_EQUAL(0, m_expected_adv_init.calls);
+    advertiser_mock_Verify();
+    advertiser_mock_Destroy();
     provisioning_mock_Verify();
     provisioning_mock_Destroy();
     timer_scheduler_mock_Verify();
     timer_scheduler_mock_Destroy();
-    packet_mgr_mock_Verify();
-    packet_mgr_mock_Destroy();
     rand_mock_Verify();
     rand_mock_Destroy();
     prov_beacon_mock_Verify();
@@ -191,20 +220,22 @@ void tearDown(void)
 extern uint8_t calculate_3GPP_CRC(const uint8_t * p_input, uint16_t size);
 
 /********** Test functions **********/
+
+
 static ble_ad_data_t * get_transaction_start_packet(uint8_t * p_data, uint16_t data_size, uint8_t transaction)
 {
     uint8_t start_payload_size = data_size > PROV_START_PDU_PAYLOAD_MAX_LEN ? PROV_START_PDU_PAYLOAD_MAX_LEN : data_size;
     uint8_t segN = ((data_size - start_payload_size) > 0) * (data_size - start_payload_size)/PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN; /*lint !e514 Boolean used in arithmetic */
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD - 1] = transaction;
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = (segN << 2) | PROV_TRANS_START_OPCODE_WITH_GPCF_FIELD;
+    trans_data_payload[PROV_ADV_OVERHEAD - 1] = transaction;
+    trans_data_payload[PROV_ADV_OVERHEAD] = (segN << 2) | PROV_TRANS_START_OPCODE_WITH_GPCF_FIELD;
     /* Total Length*/
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + 2] = data_size & 0xFF;
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + 1] = data_size >> 8;
+    trans_data_payload[PROV_ADV_OVERHEAD + 2] = data_size & 0xFF;
+    trans_data_payload[PROV_ADV_OVERHEAD + 1] = data_size >> 8;
     /* FCS*/
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + 3] = calculate_3GPP_CRC(p_data, data_size);
-    memcpy(&trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_START_PDU_HEADER_SIZE ], p_data, start_payload_size);
+    trans_data_payload[PROV_ADV_OVERHEAD + 3] = calculate_3GPP_CRC(p_data, data_size);
+    memcpy(&trans_data_payload[PROV_ADV_OVERHEAD + PROV_START_PDU_HEADER_SIZE ], p_data, start_payload_size);
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) trans_data_payload;
-    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_START_PDU_HEADER_SIZE + start_payload_size;
+    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_START_PDU_HEADER_SIZE + start_payload_size;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
@@ -219,52 +250,52 @@ static ble_ad_data_t * get_transaction_continue_packet(uint8_t * p_data, uint16_
 
     continue_payload_size -= (segment - 1 ) * PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN;
     continue_payload_size = continue_payload_size > PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN ? PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN: continue_payload_size;
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD - 1] = transaction;
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = (segment << 2) | PROV_TRANS_CONTINUE_OPCODE_WITH_GPCF_FIELD;
-    memcpy(&trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + PROV_CONTINUE_PDU_HEADER_SIZE ], p_data + PROV_START_PDU_PAYLOAD_MAX_LEN + (segment - 1)* PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN, continue_payload_size);
+    trans_data_payload[PROV_ADV_OVERHEAD - 1] = transaction;
+    trans_data_payload[PROV_ADV_OVERHEAD] = (segment << 2) | PROV_TRANS_CONTINUE_OPCODE_WITH_GPCF_FIELD;
+    memcpy(&trans_data_payload[PROV_ADV_OVERHEAD + PROV_CONTINUE_PDU_HEADER_SIZE ], p_data + PROV_START_PDU_PAYLOAD_MAX_LEN + (segment - 1)* PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN, continue_payload_size);
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) trans_data_payload;
-    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_CONTINUE_PDU_HEADER_SIZE + continue_payload_size;
+    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_CONTINUE_PDU_HEADER_SIZE + continue_payload_size;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
 
 static ble_ad_data_t * get_transaction_ack_packet(uint8_t transaction)
 {
-    trans_ack_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD - 1] = transaction;
-    trans_ack_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = PROV_TRANS_ACK_OPCODE_WITH_GPCF_FIELD;
+    trans_ack_payload[PROV_ADV_OVERHEAD - 1] = transaction;
+    trans_ack_payload[PROV_ADV_OVERHEAD] = PROV_TRANS_ACK_OPCODE_WITH_GPCF_FIELD;
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) trans_ack_payload;
-    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE;
+    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_TRANS_ACK_DATA_SIZE;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
 
 static ble_ad_data_t * get_link_open_packet(uint8_t * p_uuid)
 {
-    link_open_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = PROV_LINK_OPEN_OPCODE_WITH_GPCF_FIELD;
-    memcpy(&link_open_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD+1], p_uuid, NRF_MESH_UUID_SIZE);
+    link_open_payload[PROV_ADV_OVERHEAD] = PROV_LINK_OPEN_OPCODE_WITH_GPCF_FIELD;
+    memcpy(&link_open_payload[PROV_ADV_OVERHEAD+1], p_uuid, NRF_MESH_UUID_SIZE);
 
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) link_open_payload;
-    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE;
+    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_LINK_OPEN_DATA_SIZE;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
 
 static ble_ad_data_t * get_link_ack_packet(void)
 {
-    link_ack_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = PROV_LINK_ACK_OPCODE_WITH_GPCF_FIELD;
+    link_ack_payload[PROV_ADV_OVERHEAD] = PROV_LINK_ACK_OPCODE_WITH_GPCF_FIELD;
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) link_ack_payload;
-    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE;
+    p_ad_data->length =  1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_LINK_ACK_DATA_SIZE;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
 
 static ble_ad_data_t * get_link_close_packet(nrf_mesh_prov_link_close_reason_t close_reason)
 {
-    link_close_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = PROV_LINK_CLOSE_OPCODE_WITH_GPCF_FIELD;
-    link_close_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD+1] = (uint8_t)close_reason;
+    link_close_payload[PROV_ADV_OVERHEAD] = PROV_LINK_CLOSE_OPCODE_WITH_GPCF_FIELD;
+    link_close_payload[PROV_ADV_OVERHEAD+1] = (uint8_t)close_reason;
 
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) link_close_payload;
-    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE;
+    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + PROV_LINK_CLOSE_DATA_SIZE;
     p_ad_data->type = AD_TYPE_PB_ADV;
     return p_ad_data;
 }
@@ -277,13 +308,17 @@ static void rx_link_open(prov_bearer_adv_t * p_bearer, uint8_t * p_uuid, uint32_
     p_ad_data->data[0] = (link_id >> 24) & 0xFF;
     if (accept)
     {
-        bearer_adv_interval_reset_ExpectAndReturn(&p_bearer->advertiser, NRF_SUCCESS);
-        ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
+        advertiser_interval_set_Expect(&p_bearer->advertiser, BEARER_ADV_INT_DEFAULT_MS);
+        ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, true);
         prov_cb_link_opened_Expect(prov_bearer_adv_parent_get(p_bearer));
         timer_now_ExpectAndReturn(1000);
         timer_sch_reschedule_Expect(&p_bearer->link_timeout_event, 1000 + p_bearer->link_timeout);
     }
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
+    if (accept)
+    {
+        TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
+    }
 }
 
 static void rx_link_ack(prov_bearer_adv_t * p_bearer, uint32_t link_id, bool accept)
@@ -295,12 +330,13 @@ static void rx_link_ack(prov_bearer_adv_t * p_bearer, uint32_t link_id, bool acc
     p_ad_data->data[0] = (link_id >> 24) & 0xFF;
     if (accept)
     {
-        bearer_adv_flush_tx_Expect(&p_bearer->advertiser);
+        advertiser_flush_Expect(&p_bearer->advertiser);
+        advertiser_interval_set_Expect(&p_bearer->advertiser, BEARER_ADV_INT_DEFAULT_MS);
         prov_cb_link_opened_Expect(prov_bearer_adv_parent_get(p_bearer));
         timer_now_ExpectAndReturn(1000);
         timer_sch_reschedule_Expect(&p_bearer->link_timeout_event, 1000 + p_bearer->link_timeout);
     }
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 }
 
 static void rx_link_close(prov_bearer_adv_t * p_bearer, nrf_mesh_prov_link_close_reason_t close_reason, uint32_t link_id,  bool accept)
@@ -314,9 +350,9 @@ static void rx_link_close(prov_bearer_adv_t * p_bearer, nrf_mesh_prov_link_close
     {
         timer_sch_abort_Expect(&p_bearer->link_timeout_event);
         prov_cb_link_closed_Expect(prov_bearer_adv_parent_get(p_bearer), close_reason);
-        bearer_adv_flush_tx_Expect(&p_bearer->advertiser);
+        advertiser_flush_Expect(&p_bearer->advertiser);
     }
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 }
 
 static void tx_link_open(prov_bearer_adv_t * p_bearer, uint8_t * p_uuid, uint32_t link_id)
@@ -325,41 +361,46 @@ static void tx_link_open(prov_bearer_adv_t * p_bearer, uint8_t * p_uuid, uint32_
     p_bearer->link_timeout = 1000;
     p_bearer->p_next = NULL;
 
-    ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_SUCCESS);
+    ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE, true);
 
-    bearer_adv_advertiser_init_Expect(&p_bearer->advertiser);
+    advertiser_instance_init_ExpectStub(&p_bearer->advertiser, p_bearer->tx_buffer, sizeof(p_bearer->tx_buffer));
     rand_hw_rng_get_Expect((uint8_t*) &p_bearer->link_id, sizeof(p_bearer->link_id));
     timer_now_ExpectAndReturn(1000);
     timer_sch_reschedule_Expect(&p_bearer->link_timeout_event, 1000 + PROV_PROVISIONING_LINK_TIMEOUT_MIN_US);
-    bearer_adv_adv_start_Expect(&p_bearer->advertiser);
+    advertiser_enable_Expect(&p_bearer->advertiser);
     TEST_ASSERT_EQUAL(NRF_SUCCESS, prov_bearer_adv_link_open(prov_bearer_adv_parent_get(p_bearer), p_uuid, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
+    TEST_ASSERT_EQUAL(PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, m_packet.config.repeats);
 }
 
 static void tx_link_close(prov_bearer_adv_t * p_bearer, nrf_mesh_prov_link_close_reason_t close_reason)
 {
-    ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_SUCCESS);
+    ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, true);
     prov_bearer_adv_link_close(prov_bearer_adv_parent_get(p_bearer), close_reason);
+    TEST_ASSERT_EQUAL(PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, m_packet.config.repeats);
 
     /* Send queue empty in order to move on to link closed state */
-    bearer_adv_flush_tx_Expect(&p_bearer->advertiser);
+    advertiser_flush_Expect(&p_bearer->advertiser);
     prov_cb_link_closed_Expect(prov_bearer_adv_parent_get(p_bearer), close_reason);
     timer_sch_abort_Expect(&p_bearer->link_timeout_event);
-    p_bearer->advertiser.queue_empty_cb(&p_bearer->advertiser);
+    p_bearer->queue_empty_pending = true;
+    TEST_ASSERT_NOT_NULL(m_async_cb);
+    m_async_cb();
 }
 
 static void listen_start(prov_bearer_adv_t * p_bearer)
 {
-    packet_t packet;
-    packet_generic_t * p_packet = &packet;
-    bearer_adv_advertiser_init_Expect(&p_bearer->advertiser);
-    prov_beacon_unprov_build_ExpectAndReturn(NULL, 0, p_packet);
-    bearer_adv_tx_ExpectAndReturn(&p_bearer->advertiser, p_packet, BEARER_ADV_REPEAT_INFINITE, NRF_SUCCESS);
+    advertiser_instance_init_ExpectStub(&p_bearer->advertiser, p_bearer->tx_buffer, sizeof(p_bearer->tx_buffer));
+    advertiser_enable_Expect(&p_bearer->advertiser);
+    prov_beacon_unprov_build_ExpectAndReturn(&p_bearer->advertiser, NULL, 0, &m_packet);
+    advertiser_interval_set_Expect(&p_bearer->advertiser, NRF_MESH_UNPROV_BEACON_INTERVAL_MS);
+    advertiser_packet_send_Expect(&p_bearer->advertiser, &m_packet);
     TEST_ASSERT_EQUAL(NRF_SUCCESS, prov_bearer_adv_listen(prov_bearer_adv_parent_get(p_bearer), NULL, 0, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
+    TEST_ASSERT_EQUAL(ADVERTISER_REPEAT_INFINITE, m_packet.config.repeats);
 }
 
 static void listen_stop(prov_bearer_adv_t * p_bearer)
 {
-    bearer_adv_flush_tx_Expect(&p_bearer->advertiser);
+    advertiser_flush_Expect(&p_bearer->advertiser);
     TEST_ASSERT_EQUAL(NRF_SUCCESS, prov_bearer_adv_listen_stop(prov_bearer_adv_parent_get(p_bearer)));
 }
 
@@ -375,10 +416,10 @@ static void receive_data_ack(prov_bearer_adv_t * p_bearer, uint32_t link_id, boo
         timer_now_ExpectAndReturn(1000);
         timer_sch_reschedule_Expect(&p_bearer->link_timeout_event, 1000 + p_bearer->link_timeout);
         timer_sch_abort_Expect(&p_bearer->timeout_event);
-        bearer_adv_flush_tx_Expect(&p_bearer->advertiser);
+        advertiser_flush_Expect(&p_bearer->advertiser);
         prov_cb_ack_in_Expect(prov_bearer_adv_parent_get(p_bearer));
     }
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 }
 
 static uint8_t send_data_packet_internals(prov_bearer_adv_t * p_bearer, uint8_t * p_data, uint8_t data_length)
@@ -386,13 +427,13 @@ static uint8_t send_data_packet_internals(prov_bearer_adv_t * p_bearer, uint8_t 
     uint8_t no_segments = 1;
     uint8_t remaninig_data_length = data_length > PROV_START_PDU_PAYLOAD_MAX_LEN ? PROV_START_PDU_PAYLOAD_MAX_LEN : data_length;
     /* Start packet:*/
-    ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_START_PDU_HEADER_SIZE + remaninig_data_length, NRF_SUCCESS, 1, NRF_SUCCESS);
+    ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_START_PDU_HEADER_SIZE + remaninig_data_length, true);
     remaninig_data_length = data_length - remaninig_data_length;
     while (remaninig_data_length > 0)
     {
         no_segments++;
         uint8_t current_chunk_data_length = remaninig_data_length > PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN ? PROV_CONTINUE_PDU_PAYLOAD_MAX_LEN: remaninig_data_length;
-        ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_CONTINUE_PDU_HEADER_SIZE + current_chunk_data_length, NRF_SUCCESS, 1, NRF_SUCCESS);
+        ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_CONTINUE_PDU_HEADER_SIZE + current_chunk_data_length, true);
         remaninig_data_length -= current_chunk_data_length;
     }
     return no_segments;
@@ -420,12 +461,13 @@ static void receive_data(prov_bearer_adv_t * p_bearer, uint8_t * p_data, uint16_
     p_ad_data->data[1] = (link_id >> 16) & 0xFF;
     p_ad_data->data[0] = (link_id >> 24) & 0xFF;
 
-    ALLOC_AND_TX(&p_bearer->advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
+    ALLOC_AND_TX(&p_bearer->advertiser, PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, true);
     prov_cb_pkt_in_Expect(prov_bearer_adv_parent_get(p_bearer), NULL, data_length);
     prov_cb_pkt_in_IgnoreArg_p_data();
     timer_now_ExpectAndReturn(1000);
     timer_sch_reschedule_Expect(&p_bearer->link_timeout_event, 1000 + p_bearer->link_timeout);
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
 
     uint8_t segment = 1;
     p_ad_data = get_transaction_continue_packet(p_data, data_length, transcation, segment);
@@ -435,7 +477,7 @@ static void receive_data(prov_bearer_adv_t * p_bearer, uint8_t * p_data, uint16_
         p_ad_data->data[2] = (link_id >> 8) & 0xFF;
         p_ad_data->data[1] = (link_id >> 16) & 0xFF;
         p_ad_data->data[0] = (link_id >> 24) & 0xFF;
-        prov_bearer_adv_pkt_in(p_ad_data);
+        prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
         segment++;
         p_ad_data = get_transaction_continue_packet(p_data, data_length, transcation, segment);
     }
@@ -468,19 +510,13 @@ void test_link_establish_active(void)
     rx_link_close(&bearer.bearer.pb_adv, NRF_MESH_PROV_LINK_CLOSE_REASON_SUCCESS, link_id, false);
 
     /* Try to open a link and we fail due to pacman, the state should not change */
+    bearer.bearer.pb_adv.state = PROV_BEARER_ADV_STATE_IDLE;
     bearer.bearer.pb_adv.link_id = link_id;
-    bearer_adv_advertiser_init_Expect(&bearer.bearer.pb_adv.advertiser);
+    advertiser_instance_init_ExpectStub(&bearer.bearer.pb_adv.advertiser, bearer.bearer.pb_adv.tx_buffer, sizeof(bearer.bearer.pb_adv.tx_buffer));
     rand_hw_rng_get_Expect((uint8_t*) &bearer.bearer.pb_adv.link_id, sizeof(bearer.bearer.pb_adv.link_id));
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE, NRF_ERROR_NO_MEM, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_SUCCESS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE, false);
     TEST_ASSERT_EQUAL(NRF_ERROR_NO_MEM, prov_bearer_adv_link_open(&bearer, uuid1, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
 
-    /* Try to open a link and we fail due to bearer, the state should not change */
-    bearer.bearer.pb_adv.link_id = link_id;
-    bearer_adv_advertiser_init_Expect(&bearer.bearer.pb_adv.advertiser);
-    rand_hw_rng_get_Expect((uint8_t*) &bearer.bearer.pb_adv.link_id, sizeof(bearer.bearer.pb_adv.link_id));
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_OPEN_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_ERROR_NO_MEM);
-    packet_mgr_free_Expect(mp_packet);
-    TEST_ASSERT_EQUAL(NRF_ERROR_NO_MEM, prov_bearer_adv_link_open(&bearer, uuid1, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
 
     /* Open link. */
     tx_link_open(&bearer.bearer.pb_adv, uuid1, link_id);
@@ -501,16 +537,8 @@ void test_link_establish_active(void)
     /* A call to the prov_bearer_adv_link_close shall not fail, so if one of the external modules lets us down
        we close without sending and immediately do a callback to the module above.
        *** Technically, this is illegal behaviour, perhaps we need a timer to retry closing? ***/
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, NRF_ERROR_NO_MEM, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_SUCCESS);
-    bearer_adv_flush_tx_Expect(&bearer.bearer.pb_adv.advertiser);
-    prov_cb_link_closed_Expect(&bearer, NRF_MESH_PROV_LINK_CLOSE_REASON_TIMEOUT);
-    timer_sch_abort_Expect(&bearer.bearer.pb_adv.link_timeout_event);
-    prov_bearer_adv_link_close(&bearer, NRF_MESH_PROV_LINK_CLOSE_REASON_TIMEOUT);
-
-    tx_link_open(&bearer.bearer.pb_adv, uuid1, link_id);
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_ERROR_NO_MEM);
-    bearer_adv_flush_tx_Expect(&bearer.bearer.pb_adv.advertiser);
-    packet_mgr_free_Expect(mp_packet);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, false);
+    advertiser_flush_Expect(&bearer.bearer.pb_adv.advertiser);
     prov_cb_link_closed_Expect(&bearer, NRF_MESH_PROV_LINK_CLOSE_REASON_TIMEOUT);
     timer_sch_abort_Expect(&bearer.bearer.pb_adv.link_timeout_event);
     prov_bearer_adv_link_close(&bearer, NRF_MESH_PROV_LINK_CLOSE_REASON_TIMEOUT);
@@ -552,18 +580,18 @@ void test_link_establish_passive(void)
     rx_link_close(&bearer.bearer.pb_adv, NRF_MESH_PROV_LINK_CLOSE_REASON_SUCCESS, link_id, false);
 
     /* Send a packet with the LINK_OPEN opcode but no uuid, should be ignored. */
-    minimal_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = PROV_LINK_OPEN_OPCODE_WITH_GPCF_FIELD;
+    minimal_payload[PROV_ADV_OVERHEAD] = PROV_LINK_OPEN_OPCODE_WITH_GPCF_FIELD;
     ble_ad_data_t * p_ad_data = (ble_ad_data_t *) minimal_payload;
-    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD + 1;
+    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + 1;
     p_ad_data->type = AD_TYPE_PB_ADV;
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     /* Send a control packet with the unknown opcode, should be ignored:*/
-    minimal_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD] = 0xFF;
+    minimal_payload[PROV_ADV_OVERHEAD] = 0xFF;
     p_ad_data = (ble_ad_data_t *) minimal_payload;
-    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD + 1;
+    p_ad_data->length = 1 /* AD Type */ + PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t) + 1;
     p_ad_data->type = AD_TYPE_PB_ADV;
-    prov_bearer_adv_pkt_in(p_ad_data);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     /* RX a packet with LINK_OPEN command using wrong uuid*/
     nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
@@ -571,15 +599,8 @@ void test_link_establish_passive(void)
 
     /* Fail RX of a packet with LINK_OPEN command due to PACKET MANAGER*/
     nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
-    bearer_adv_interval_reset_ExpectAndReturn(&bearer.bearer.pb_adv.advertiser, NRF_SUCCESS);
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, NRF_ERROR_NO_MEM, 1, NRF_SUCCESS);
-    rx_link_open(&bearer.bearer.pb_adv, uuid1, link_id, false);
-
-    /* Fail RX of a packet with LINK_OPEN command due to BEARER ADV */
-    nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
-    bearer_adv_interval_reset_ExpectAndReturn(&bearer.bearer.pb_adv.advertiser, NRF_SUCCESS);
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_ERROR_NO_MEM);
-    packet_mgr_free_Expect(mp_packet);
+    advertiser_interval_set_Expect(&bearer.bearer.pb_adv.advertiser, BEARER_ADV_INT_DEFAULT_MS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, false);
     rx_link_open(&bearer.bearer.pb_adv, uuid1, link_id, false);
 
     /* State shouldn't have changed due to the failures, so a successful RX should be possible: */
@@ -589,9 +610,11 @@ void test_link_establish_passive(void)
     rx_link_open(&bearer.bearer.pb_adv, uuid1, link_id, true);
 
     /* Sending another link open should produce an ack without the callback to higher layers */
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_ACK_DATA_SIZE, true);
     nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
     rx_link_open(&bearer.bearer.pb_adv, uuid1, link_id, false);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
+
 
     TEST_ASSERT_EQUAL(NRF_ERROR_INVALID_STATE, prov_bearer_adv_listen(&bearer, NULL, 0, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
     TEST_ASSERT_EQUAL(NRF_ERROR_INVALID_STATE, prov_bearer_adv_link_open(&bearer, uuid1, PROV_PROVISIONING_LINK_TIMEOUT_MIN_US));
@@ -667,7 +690,7 @@ void test_packet_send(void)
 
     /* Send 1 byte long data */
     uint8_t no_segments = send_data_packet(&bearer.bearer.pb_adv, data, 1);
-    /* transcation no starts with 0 when in provisioner role (section 5.2.1 in mesh core spec d09r19) */
+    /* transcation no starts with 0 when in provisioner role (section 5.2.1 in Mesh Profile Specification v1.0) */
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_out);
     TEST_ASSERT_EQUAL(1, no_segments);
     /* Can't send data without receiving an ack or timeout for the previous one*/
@@ -751,7 +774,8 @@ void test_packet_send_abnormal(void)
     TEST_ASSERT_EQUAL(1, no_segments);
 
     /* Send in ack with wrong transcation value, it should be ignored */
-    prov_bearer_adv_pkt_in(get_transaction_ack_packet(curr_transcation-1));
+    ble_ad_data_t * p_ack_packet = get_transaction_ack_packet(curr_transcation-1);
+    prov_bearer_adv_packet_in(p_ack_packet->data, p_ack_packet->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     /* LINK_OPEN and LINK_ACK control messages should also be ignored */
     nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
     rx_link_open(&bearer.bearer.pb_adv, uuid1, link_id, false);
@@ -771,24 +795,25 @@ void test_packet_send_abnormal(void)
     /* Time out cb when the link time out has passed: this should produce a LINK_CLOSE message*/
     /* First attempt to TX fails*/
     timestamp_t timeout_timestamp = bearer.bearer.pb_adv.sar_timeout + 1;
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_ERROR_NO_MEM);
-    packet_mgr_free_Expect(mp_packet);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, false);
     bearer.bearer.pb_adv.timeout_event.cb(bearer.bearer.pb_adv.sar_timeout + 1, &bearer.bearer.pb_adv);
 
     /* timeout interval should be larger than 0 */
     TEST_ASSERT(bearer.bearer.pb_adv.timeout_event.interval > 0);
     /* Timeout value should be updated to NOW to ensure a timeout trigger for the next retry cb. */
     TEST_ASSERT_EQUAL(timeout_timestamp, bearer.bearer.pb_adv.sar_timeout);
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, NRF_SUCCESS, PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, NRF_SUCCESS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_LINK_CLOSE_DATA_SIZE, true);
     bearer.bearer.pb_adv.timeout_event.cb(bearer.bearer.pb_adv.sar_timeout+1, &bearer.bearer.pb_adv);
+    TEST_ASSERT_EQUAL(PROV_BEARER_ADV_UNACKED_REPEAT_COUNT, m_packet.config.repeats);
 
     /* Send queue empty in order to move on to link closed state */
     timer_sch_abort_Expect(&bearer.bearer.pb_adv.timeout_event);
-    bearer_adv_flush_tx_Expect(&bearer.bearer.pb_adv.advertiser);
+    advertiser_flush_Expect(&bearer.bearer.pb_adv.advertiser);
     prov_cb_link_closed_Expect(prov_bearer_adv_parent_get(&bearer.bearer.pb_adv), NRF_MESH_PROV_LINK_CLOSE_REASON_TIMEOUT);
     timer_sch_abort_Expect(&bearer.bearer.pb_adv.link_timeout_event);
-    bearer.bearer.pb_adv.advertiser.queue_empty_cb(&bearer.bearer.pb_adv.advertiser);
-
+    bearer.bearer.pb_adv.queue_empty_pending = true;
+    TEST_ASSERT_NOT_NULL(m_async_cb);
+    m_async_cb();
     /* Receive a link close when in TX state */
     /* Start listenining. */
     listen_start(&bearer.bearer.pb_adv);
@@ -840,27 +865,29 @@ void test_packet_receive(void)
     receive_data(&bearer.bearer.pb_adv, data, PROV_START_PDU_PAYLOAD_MAX_LEN, curr_transcation++, link_id);
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
     /* Re send the old packet after the wrap around and expect a response but no callback!*/
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, true);
     prov_cb_pkt_in_Expect(prov_bearer_adv_parent_get(&bearer.bearer.pb_adv), NULL, 1);
     prov_cb_pkt_in_IgnoreArg_p_data();
     timer_now_ExpectAndReturn(1000);
     timer_sch_reschedule_Expect(&bearer.bearer.pb_adv.link_timeout_event, 1000 + bearer.bearer.pb_adv.link_timeout);
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data, 1, curr_transcation));
+    ble_ad_data_t * p_ad_data = get_transaction_start_packet(data, 1, curr_transcation);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
     TEST_ASSERT_EQUAL(curr_transcation+1, bearer.bearer.pb_adv.transaction_in);
 
     rx_link_close(&bearer.bearer.pb_adv, NRF_MESH_PROV_LINK_CLOSE_REASON_SUCCESS, link_id, true);
 
     /* Send unknown control packet. Nothing should happen*/
-    ble_ad_data_t * p_ad_data = get_link_open_packet(uuid1);
-    p_ad_data->data[PROV_ADV_OVERHEAD] = 0xFF;
-    prov_bearer_adv_pkt_in(p_ad_data);
+    p_ad_data = get_link_open_packet(uuid1);
+    p_ad_data->data[PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t)] = 0xFF;
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     /* Start listenining. */
     listen_start(&bearer.bearer.pb_adv);
     /* Send unknown control packet. Nothing should happen*/
     p_ad_data = get_link_open_packet(uuid1);
-    p_ad_data->data[PROV_ADV_OVERHEAD] = 0xFF;
-    prov_bearer_adv_pkt_in(p_ad_data);
+    p_ad_data->data[PROV_ADV_OVERHEAD - sizeof(ble_ad_data_t)] = 0xFF;
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     listen_stop(&bearer.bearer.pb_adv);
 }
@@ -871,13 +898,15 @@ void test_packet_receive_abnormal(void)
     uint32_t link_id = 0xBACA;
     uint8_t curr_transcation = PROVISIONER_TRANSACTION_START_VALUE;
     /* Can't receive data until a link is established*/
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data,1,0));
+    ble_ad_data_t * p_ad_data = get_transaction_start_packet(data,1,0);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     /* Start listenining. */
     listen_start(&bearer.bearer.pb_adv);
 
     /* Can't receive data until a link is established*/
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data,1,0));
+    p_ad_data = get_transaction_start_packet(data,1,0);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
 
     /* LINK_OPEN */
     nrf_mesh_configure_device_uuid_get_ExpectAndReturn(uuid1);
@@ -889,14 +918,19 @@ void test_packet_receive_abnormal(void)
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
 
     /* Send the same data. */
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data, 1, curr_transcation-1));
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, true);
+    p_ad_data = get_transaction_start_packet(data, 1, curr_transcation-1);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
 
     /* Re-send different data with the same transcation value, it won't care and still send an ack and ignore contents. */
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(&data[10], 10, curr_transcation-1));
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, true);
+    p_ad_data = get_transaction_start_packet(&data[10], 10, curr_transcation-1);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
+
 
     /* Increment transaction number with a large number, should be OK, and the next expected
      * transaction number should be incremented. */
@@ -905,28 +939,36 @@ void test_packet_receive_abnormal(void)
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
 
     /* Send new data with wrong fcs (CRC)*/
-    ble_ad_data_t * p_ad_data = get_transaction_start_packet(&data[10], 10, curr_transcation);
-    trans_data_payload[sizeof(ble_ad_data_t) + PROV_ADV_OVERHEAD + 3]++;
-    prov_bearer_adv_pkt_in(p_ad_data);
+    p_ad_data = get_transaction_start_packet(&data[10], 10, curr_transcation);
+    trans_data_payload[PROV_ADV_OVERHEAD + 3]++;
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
 
     /***** Send a new segmented packet and in between send an old packet *****/
     /* First segment of the new packet: */
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data, PROV_START_PDU_PAYLOAD_MAX_LEN +1, curr_transcation));
+    p_ad_data = get_transaction_start_packet(data, PROV_START_PDU_PAYLOAD_MAX_LEN +1, curr_transcation);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     /* transaction has not been updated yet*/
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
     /* Re send an old packet but do not expect a response*/
-    prov_bearer_adv_pkt_in(get_transaction_start_packet(data, 1, curr_transcation-1));
+    p_ad_data = get_transaction_start_packet(data, 1, curr_transcation-1);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
     /* Send the rest of the new packet and expect an ack */
-    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, BLE_ADV_OVERHEAD + PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, NRF_SUCCESS, 1, NRF_SUCCESS);
+    ALLOC_AND_TX(&bearer.bearer.pb_adv.advertiser, PROV_ADV_OVERHEAD + PROV_TRANS_ACK_DATA_SIZE, true);
     prov_cb_pkt_in_Expect(prov_bearer_adv_parent_get(&bearer.bearer.pb_adv), NULL, PROV_START_PDU_PAYLOAD_MAX_LEN + 1);
     prov_cb_pkt_in_IgnoreArg_p_data();
     timer_now_ExpectAndReturn(1000);
     timer_sch_reschedule_Expect(&bearer.bearer.pb_adv.link_timeout_event, 1000 + bearer.bearer.pb_adv.link_timeout);
-    prov_bearer_adv_pkt_in(get_transaction_continue_packet(data, PROV_START_PDU_PAYLOAD_MAX_LEN + 1, curr_transcation++, 1));
+    p_ad_data = get_transaction_continue_packet(data, PROV_START_PDU_PAYLOAD_MAX_LEN + 1, curr_transcation++, 1);
+    prov_bearer_adv_packet_in(p_ad_data->data, p_ad_data->length - BLE_AD_DATA_OVERHEAD, &m_dummy_metadata);
+    TEST_ASSERT_EQUAL(1, m_packet.config.repeats);
+
     /* transaction number is now updated */
     TEST_ASSERT_EQUAL(curr_transcation, bearer.bearer.pb_adv.transaction_in);
+
+    /* Close the link to remove the internal reference to the bearer. */
+    rx_link_close(&bearer.bearer.pb_adv, NRF_MESH_PROV_LINK_CLOSE_REASON_SUCCESS, link_id, true);
 }
 
 void test_interface_return(void)
@@ -938,6 +980,7 @@ void test_interface_return(void)
     TEST_ASSERT_NOT_NULL(p_interface->listen_stop);
     TEST_ASSERT_NOT_NULL(p_interface->link_open);
     TEST_ASSERT_NOT_NULL(p_interface->link_close);
+    TEST_ASSERT_NOT_NULL(m_async_cb);
 }
 
 void test_packet_fcs_sample_check(void)
@@ -995,4 +1038,68 @@ void test_packet_fcs_sample_check(void)
     TEST_ASSERT_EQUAL(0x3E, calculate_3GPP_CRC(sample_data_8_7_13, sizeof(sample_data_8_7_13)));
 }
 
+void test_tx_complete(void)
+{
+    prov_bearer_t bearer = {0};
+    uint32_t link_id = 0;
 
+    /** Establish a connection **/
+    /* Open link. */
+    tx_link_open(&bearer.bearer.pb_adv, uuid1, link_id);
+    /* Sent one packet: */
+    TEST_ASSERT_EQUAL(1, bearer.bearer.pb_adv.last_token);
+
+    TEST_ASSERT_NOT_NULL(m_tx_complete_cb);
+    bearer_event_flag_set_Expect(ASYNC_FLAG);
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+    TEST_ASSERT_TRUE(bearer.bearer.pb_adv.queue_empty_pending);
+
+    TEST_ASSERT_NOT_NULL(m_async_cb);
+    m_async_cb();
+    TEST_ASSERT_FALSE(bearer.bearer.pb_adv.queue_empty_pending);
+
+    rx_link_ack(&bearer.bearer.pb_adv, link_id, true);
+
+    /* Send 3 segment data */
+    uint32_t old_last_token = bearer.bearer.pb_adv.last_token;
+    uint8_t no_segments = send_data_packet(&bearer.bearer.pb_adv, data, PROV_PDU_MAX_LENGTH);
+    TEST_ASSERT_EQUAL(3, no_segments);
+    TEST_ASSERT_EQUAL(old_last_token + 3, bearer.bearer.pb_adv.last_token);
+    for (uint32_t i = 0; i < 2; ++i)
+    {
+        /* The token increase once per TX, mirror these tokens to mimic tx complete on each packet. */
+        m_packet.token = old_last_token + 1 + i;
+        m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+        TEST_ASSERT_FALSE(bearer.bearer.pb_adv.queue_empty_pending);
+    }
+    bearer_event_flag_set_Expect(ASYNC_FLAG);
+    m_packet.token = bearer.bearer.pb_adv.last_token;
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+    TEST_ASSERT_TRUE(bearer.bearer.pb_adv.queue_empty_pending);
+
+    /* Receive an ack on the data packet so we can proceed the test */
+    receive_data_ack(&bearer.bearer.pb_adv, link_id, true);
+
+    /* Close the link to remove the internal reference to the bearer. */
+    rx_link_close(&bearer.bearer.pb_adv, NRF_MESH_PROV_LINK_CLOSE_REASON_SUCCESS, link_id, true);
+
+    /* Start listenining. */
+    listen_start(&bearer.bearer.pb_adv);
+    /* Should not mark the beacon as a pending tx packet (token should stay at initial value). */
+    TEST_ASSERT_EQUAL(0, bearer.bearer.pb_adv.last_token);
+    bearer.bearer.pb_adv.queue_empty_pending = false;
+
+    prov_bearer_t bearer_copy = bearer;
+    /* We'll get a TX complete callback for every transmitted beacon, but should
+     * ignore them all. */
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+    m_tx_complete_cb(&bearer.bearer.pb_adv.advertiser, m_packet.token, 0);
+
+    TEST_ASSERT_EQUAL_MEMORY(&bearer_copy, &bearer, sizeof(bearer));
+
+    /* Getting an unprompted async process call shouldn't do anything */
+    m_async_cb();
+    TEST_ASSERT_EQUAL_MEMORY(&bearer_copy, &bearer, sizeof(bearer));
+}

@@ -1,0 +1,16 @@
+{
+    "__packet__": true,
+    "name": "unseg",
+    "type": "variable",
+    "module": "trs",
+    "packet_type": "packet_mesh_trs_packet_t",
+    "max_length": 16,
+    "fields": [
+        {
+            "name": "other",
+            "width":  8,
+            "doc": "common header fields (covered by other formats)",
+            "visible": false
+        }
+    ]
+}

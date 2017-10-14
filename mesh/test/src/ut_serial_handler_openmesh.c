@@ -81,11 +81,11 @@ void test_openmesh_rx(void)
     serial_packet_t cmd;
     cmd.opcode = SERIAL_OPCODE_CMD_OPENMESH_DFU_DATA;
     cmd.length = SERIAL_PACKET_LENGTH_OVERHEAD + 43;
-    memset(&cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 0xAB, sizeof(nrf_mesh_dfu_packet_t));
-    nrf_mesh_dfu_rx_ExpectAndReturn(&cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 43, NRF_SUCCESS);
+    memset(cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 0xAB, sizeof(nrf_mesh_dfu_packet_t));
+    nrf_mesh_dfu_rx_ExpectAndReturn(cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 43, NULL, NRF_SUCCESS);
     EXPECT_ACK(cmd.opcode, NRF_SUCCESS);
     serial_handler_openmesh_rx(&cmd);
-    nrf_mesh_dfu_rx_ExpectAndReturn(&cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 43, 0x895);
+    nrf_mesh_dfu_rx_ExpectAndReturn(cmd.payload.cmd.openmesh.dfu_data.dfu_packet, 43, NULL, 0x895);
     EXPECT_ACK(cmd.opcode, 0x895);
     serial_handler_openmesh_rx(&cmd);
 }
